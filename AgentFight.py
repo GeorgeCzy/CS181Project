@@ -469,17 +469,24 @@ class MinimaxPlayer(Player):
 
 class Game:
     """Main class to manage the game flow."""
-    def __init__(self):
+    def __init__(self, agent=None, base_agent=None): # 这里我改了，但是不影响原本用法
         self.board_manager = Board()
-        self.players = {
-            # 修改这里，将人类玩家替换为AI玩家
-            # 0: MinimaxPlayer(0, max_depth=3), # 红色AI
-            0: RandomPlayer(0), # 红色AI
-            1: MinimaxPlayer(1, max_depth=3)  # 蓝色AI
-            # 或者可以是一个Minimax vs Random
-            # 0: MinimaxPlayer(0, max_depth=3),
-            # 1: RandomPlayer(1)
-        }
+        if agent is None:
+            self.players = {
+                # 修改这里，将人类玩家替换为AI玩家
+                # 0: MinimaxPlayer(0, max_depth=3), # 红色AI
+                0: RandomPlayer(0), # 红色AI
+                1: MinimaxPlayer(1, max_depth=3)  # 蓝色AI
+                # 或者可以是一个Minimax vs Random
+                # 0: MinimaxPlayer(0, max_depth=3),
+                # 1: RandomPlayer(1)
+            }
+        else:
+            base_agent = base_agent if base_agent else RandomPlayer
+            self.players = {
+                0: agent if isinstance(agent, Player) else agent(0),  # 红色AI
+                1: base_agent if isinstance(base_agent, Player) else agent(1)   # 蓝色AI
+            }
         self.current_player_id = 0
         self.running = True
         self.AI_DELAY_SECONDS = 0.0 # AI行动之间的延迟，以便观察
