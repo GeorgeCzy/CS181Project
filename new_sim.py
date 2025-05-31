@@ -2,13 +2,16 @@ import pygame
 import random
 import sys
 import time
+import copy # 导入 copy 模块用于深拷贝
 
-# 游戏设置
+# --- Constants and Initialization ---
+# Game Settings
 ROWS, COLS = 7, 8
 TILE_SIZE = 80
 SCREEN_WIDTH, SCREEN_HEIGHT = COLS * TILE_SIZE, ROWS * TILE_SIZE + 40
+STATUS_BAR_HEIGHT = 40 # Added for clarity
 
-# 颜色
+# Colors
 WHITE = (255, 255, 255)
 BLACK = (0, 0, 0)
 RED = (220, 50, 50)
@@ -17,229 +20,393 @@ GREY = (180, 180, 180)
 YELLOW = (255, 255, 0)
 
 pygame.init()
+pygame.font.init() # Ensure font module is initialized
 screen = pygame.display.set_mode((SCREEN_WIDTH, SCREEN_HEIGHT))
 pygame.display.set_caption("简化斗兽棋")
 font = pygame.font.SysFont(None, 36)
 
-# 棋子类
+# --- Game Classes ---
+
 class Piece:
+    """Represents a single game piece with player and strength."""
     def __init__(self, player, strength):
-        self.player = player  # 0 = 红方，1 = 蓝方
+        self.player = player  # 0 = Red, 1 = Blue
         self.strength = strength
         self.revealed = False
+    
+    # 为了深拷贝 Piece 对象，我们需要实现 __copy__ 或 __deepcopy__
+    # 对于这个简单的类，浅拷贝它的属性通常就足够了，但为了严谨，可以实现深拷贝
+    def __deepcopy__(self, memo):
+        cls = self.__class__
+        result = cls.__new__(cls)
+        memo[id(self)] = result
+        for k, v in self.__dict__.items():
+            setattr(result, k, copy.deepcopy(v, memo))
+        return result
 
-# 初始化棋盘
-def create_board():
-    board = [[None for _ in range(COLS)] for _ in range(ROWS)]
+class Board:
+    """Manages the game board state and piece placement."""
+    def __init__(self):
+        self.board = [[None for _ in range(COLS)] for _ in range(ROWS)]
+        self._initialize_pieces()
 
-    all_pieces = [Piece(player, strength)
-                  for player in [0, 1]
-                  for strength in range(1, 9)]
+    def _initialize_pieces(self):
+        """Initializes and shuffles all pieces on the board."""
+        all_pieces = [Piece(player, strength)
+                      for player in [0, 1]
+                      for strength in range(1, 9)]
+        random.shuffle(all_pieces)
 
-    random.shuffle(all_pieces)
-    positions = [(r, c) for r in range(ROWS) for c in range(COLS) if r < 1 or r > 5]
-    random.shuffle(positions)
+        # Pieces are placed only on the top and bottom two rows
+        valid_positions = []
+        for r in range(ROWS):
+            for c in range(COLS):
+                # 初始布局修改为只放在最顶上两行和最底下两行 (0,1, ROWS-2, ROWS-1)
+                if r < 1 or r >= ROWS - 1: # Rows 0, 1, 5, 6
+                    valid_positions.append((r, c))
 
-    for piece, (r, c) in zip(all_pieces, positions[:16]):
-        board[r][c] = piece
+        random.shuffle(valid_positions)
 
-    return board
+        # 确保只放置与 pieces 数量相符的棋子
+        # 你的 all_pieces 列表有 16 个棋子 (2 玩家 * 8 强度)
+        # valid_positions 应该至少有 16 个位置。ROWS 7 * COLS 8 = 56
+        # r < 2 (rows 0, 1) -> 2 * 8 = 16 positions
+        # r >= ROWS - 2 (rows 5, 6) -> 2 * 8 = 16 positions
+        # 总共 32 个位置。所以这里的 valid_positions[:len(all_pieces)] 是正确的。
+        for piece, (r, c) in zip(all_pieces, valid_positions[:len(all_pieces)]):
+            self.board[r][c] = piece
 
-board = create_board()
-selected = None
-current_player = 0
+    def get_piece(self, row, col):
+        """Returns the piece at the given coordinates."""
+        if 0 <= row < ROWS and 0 <= col < COLS:
+            return self.board[row][col]
+        return None
 
-def draw_board():
-    screen.fill(WHITE)
-    for i in range(ROWS):
-        for j in range(COLS):
-            rect = pygame.Rect(j*TILE_SIZE, i*TILE_SIZE, TILE_SIZE, TILE_SIZE)
-            pygame.draw.rect(screen, BLACK, rect, 1)
-            piece = board[i][j]
-            if piece:
-                if piece.revealed:
-                    color = RED if piece.player == 0 else BLUE
-                    pygame.draw.circle(screen, color, rect.center, TILE_SIZE//3)
-                    text = font.render(str(piece.strength), True, WHITE)
-                    text_rect = text.get_rect(center=rect.center)
-                    screen.blit(text, text_rect)
-                else:
-                    pygame.draw.rect(screen, GREY, rect.inflate(-10, -10))
+    def set_piece(self, row, col, piece):
+        """Sets a piece at the given coordinates."""
+        if 0 <= row < ROWS and 0 <= col < COLS:
+            self.board[row][col] = piece
 
-    if selected:
-        i, j = selected
-        rect = pygame.Rect(j*TILE_SIZE, i*TILE_SIZE, TILE_SIZE, TILE_SIZE)
-        pygame.draw.rect(screen, YELLOW, rect, 3)
+    def is_adjacent(self, pos1, pos2):
+        """Checks if two positions are adjacent (horizontal or vertical)."""
+        r1, c1 = pos1
+        r2, c2 = pos2
+        return abs(r1 - r2) + abs(c1 - c2) == 1
 
-    status = f"Now: {'Red' if current_player == 0 else 'Blue'}'s turn"
-    text_color = RED if current_player == 0 else BLUE
-    text = font.render(status, True, text_color)
-    screen.blit(text, (10, SCREEN_HEIGHT - 35))
+    def try_move(self, start_pos, end_pos):
+        """
+        Attempts to move a piece from start_pos to end_pos, handling captures.
+        Returns True if the move was successful, False otherwise.
+        """
+        sr, sc = start_pos
+        er, ec = end_pos
+        piece_moving = self.get_piece(sr, sc)
+        piece_at_target = self.get_piece(er, ec)
 
-def is_adjacent(pos1, pos2):
-    r1, c1 = pos1
-    r2, c2 = pos2
-    return abs(r1 - r2) + abs(c1 - c2) == 1
+        # 1. 移动棋子不存在
+        if not piece_moving:
+            return False
 
-def try_move(start, end):
-    sr, sc = start
-    er, ec = end
-    p1 = board[sr][sc]
-    p2 = board[er][ec]
+        # 2. 不是自己的棋子不能移动
+        # 这个检查应该在调用 try_move 之前由 Player 类完成，但为了 Board 的独立性也可以在这里检查
+        # 比如，在 AI 决定移动前，它应该只选择自己的棋子
+        # if piece_moving.player != current_player_id: return False # 如果 try_move 接受当前玩家 ID
 
-    if p2 is None:
-        board[er][ec] = p1
-        board[sr][sc] = None
-        return True
-    elif not p2.revealed:
-        p2.revealed = True
-        if p2.player == p1.player:
+        # 3. 目标位置不是相邻的
+        if not self.is_adjacent(start_pos, end_pos):
+            return False
+
+        # 4. 目标位置为空
+        if piece_at_target is None:
+            self.set_piece(er, ec, piece_moving)
+            self.set_piece(sr, sc, None)
             return True
-        if p1.strength >= p2.strength or (p1.strength == 1 and p2.strength == 8):
-            board[er][ec] = p1
-            board[sr][sc] = None
+        # 5. 目标位置有棋子
         else:
-            board[sr][sc] = None
-        return True
-    elif p2.player != p1.player:
-        if p1.strength >= p2.strength or (p1.strength == 1 and p2.strength == 8):
-            board[er][ec] = p1
-            board[sr][sc] = None
-            return True
-        if p1.strength < p2.strength or (p1.strength == 8 and p2.strength == 1):
-            board[sr][sc] = None
-            return True
-    return False
+            # 5a. 目标棋子未翻开
+            if not piece_at_target.revealed:
+                piece_at_target.revealed = True # 翻开目标棋子
+                # 如果是自己的未翻开棋子，只是翻开，不能移动过去
+                if piece_at_target.player == piece_moving.player:
+                    return True # 翻开即结束本回合
+                else:
+                    # 如果是对手的未翻开棋子，进行捕获判断（强度比较）
+                    if piece_moving.strength > piece_at_target.strength or \
+                       (piece_moving.strength == 1 and piece_at_target.strength == 8): # 鼠吃象
+                        self.set_piece(er, ec, piece_moving)
+                        self.set_piece(sr, sc, None)
+                    elif piece_moving.strength == piece_at_target.strength: # 同强度
+                        self.set_piece(sr, sc, None)
+                        self.set_piece(er, ec, None) 
+                    else: # 移动方被吃
+                        self.set_piece(sr, sc, None)
+                    return True # 完成捕获，结束本回合
+            # 5b. 目标棋子已翻开
+            else:
+                # 5b-i. 目标棋子是自己的棋子 (已翻开)
+                if piece_at_target.player == piece_moving.player:
+                    return False # 不能吃自己的棋子，也不能移动到有自己棋子的格子
 
-def if_terminate():
-    red = [(r, c) for r in range(ROWS) for c in range(COLS) if board[r][c] and board[r][c].player == 0]
-    blue = [(r, c) for r in range(ROWS) for c in range(COLS) if board[r][c] and board[r][c].player == 1]
+                # 5b-ii. 目标棋子是对手的棋子 (已翻开)
+                else:
+                    if piece_moving.strength > piece_at_target.strength or \
+                       (piece_moving.strength == 1 and piece_at_target.strength == 8): # 鼠吃象
+                        self.set_piece(er, ec, piece_moving)
+                        self.set_piece(sr, sc, None)
+                        return True
+                    elif piece_moving.strength < piece_at_target.strength or \
+                         (piece_moving.strength == 8 and piece_at_target.strength == 1): # 象不能吃鼠
+                        self.set_piece(sr, sc, None) # 移动方被吃
+                        return True
+                    else: # 同强度
+                        self.set_piece(sr, sc, None)
+                        self.set_piece(er, ec, None) # 两个棋子同强度
+                        return True
+        return False # 默认返回 False，表示移动未成功
 
-    if not red:
-        print("Blue wins!")
-        pygame.quit()
-        sys.exit()
-    if not blue:
-        print("Red wins!")
-        pygame.quit()
-        sys.exit()
-    if len(red) == 1 and len(blue) == 1:
-        rr, rc = red[0]
-        br, bc = blue[0]
-        if not is_adjacent((rr, rc), (br, bc)):
-            print("Draw!")
-            pygame.quit()
-            sys.exit()
+    def get_player_pieces(self, player_id):
+        """Returns a list of positions for a given player's pieces."""
+        return [(r, c) for r in range(ROWS) for c in range(COLS)
+                if self.board[r][c] and self.board[r][c].player == player_id]
 
-class HumanControl:
-    def __init__(self, player):
-        self.player = player
-        self.selected = None
+class Player:
+    """Base class for players."""
+    def __init__(self, player_id):
+        self.player_id = player_id
 
-    def handle_event(self, event):
-        global current_player,selected
+    def handle_event(self, event, board):
+        """Handles Pygame events (e.g., mouse clicks for human players)."""
+        raise NotImplementedError
 
+    def take_turn(self, board):
+        """Executes a turn for AI players."""
+        raise NotImplementedError
+
+class HumanPlayer(Player):
+    """Controls a player via human input."""
+    def __init__(self, player_id):
+        super().__init__(player_id)
+        self.selected_piece_pos = None
+
+    def handle_event(self, event, board):
         if event.type == pygame.MOUSEBUTTONDOWN:
             x, y = event.pos
             row, col = y // TILE_SIZE, x // TILE_SIZE
 
-            if row >= ROWS or col >= COLS:
-                return
+            if not (0 <= row < ROWS and 0 <= col < COLS):
+                return False # Event not handled (clicked outside board)
 
-            piece = board[row][col]
-            if self.selected:
-                if is_adjacent(self.selected, (row, col)):
-                    moved = try_move(self.selected, (row, col))
-                    if moved:
-                        self.selected = None
-                        selected = None
-                        current_player = 1 - current_player
+            piece = board.get_piece(row, col)
+
+            if self.selected_piece_pos:
+                # A piece is already selected, try to move or deselect
+                sr, sc = self.selected_piece_pos
+                piece_moving = board.get_piece(sr, sc)
+
+                # 确保选择的棋子是自己的
+                if piece_moving and piece_moving.player == self.player_id:
+                    if board.is_adjacent(self.selected_piece_pos, (row, col)):
+                        # 尝试移动
+                        moved = board.try_move(self.selected_piece_pos, (row, col))
+                        if moved:
+                            self.selected_piece_pos = None
+                            return True # Move successful, turn ends
+                        else:
+                            # 移动失败（例如，试图移动到自己已翻开的棋子），取消选择
+                            self.selected_piece_pos = None
                     else:
-                        self.selected = None
-                        selected = None
-                else:
-                    self.selected = None
-                    selected = None
+                        # 目标位置不相邻，取消选择当前棋子，并尝试选择新棋子
+                        self.selected_piece_pos = None
+                        if piece and piece.player == self.player_id:
+                            if not piece.revealed:
+                                piece.revealed = True
+                                return True # Revealed piece, turn ends
+                            else:
+                                self.selected_piece_pos = (row, col) # Select new piece
+                else: # 如果 selected_piece_pos 指向的不是自己的棋子了（可能被AI吃掉），或者已经清空了
+                    self.selected_piece_pos = None
+                    if piece and piece.player == self.player_id:
+                        if not piece.revealed:
+                            piece.revealed = True
+                            return True # Revealed piece, turn ends
+                        else:
+                            self.selected_piece_pos = (row, col) # Select new piece
             elif piece:
+                # No piece selected, try to select one
                 if not piece.revealed:
                     piece.revealed = True
-                    current_player = 1 - current_player
-                elif piece.player == self.player:
-                    self.selected = (row, col)
-                    selected = (row, col)
+                    return True # Revealed piece, turn ends
+                elif piece.player == self.player_id: # 只能选择自己的棋子
+                    self.selected_piece_pos = (row, col) # Select piece
+        return False # Event not handled or turn not ended
 
-class RandomPlayer:
-    def __init__(self, player):
-        self.player = player
+    def get_selected_pos(self):
+        """Returns the position of the currently selected piece."""
+        return self.selected_piece_pos
 
-    def step(self):
-        global current_player
+class RandomPlayer(Player):
+    """An AI player that makes random valid moves."""
+    def __init__(self, player_id):
+        super().__init__(player_id)
 
-        actions = []
+    def take_turn(self, board):
+        possible_actions = []
 
+        # Find all possible reveal actions
         for r in range(ROWS):
             for c in range(COLS):
-                piece = board[r][c]
-                if piece and piece.player == self.player:
-                    if not piece.revealed:
-                        actions.append(("reveal", (r, c)))
-                    elif piece.revealed:
-                        for dr, dc in [(-1,0),(1,0),(0,-1),(0,1)]:
-                            nr, nc = r + dr, c + dc
-                            if 0 <= nr < ROWS and 0 <= nc < COLS:
-                                actions.append(("move", (r, c), (nr, nc)))
+                piece = board.get_piece(r, c)
+                if piece and piece.player == self.player_id and not piece.revealed:
+                    possible_actions.append(("reveal", (r, c)))
 
-        random.shuffle(actions)
-        for action in actions:
+        # Find all possible move actions
+        for r in range(ROWS):
+            for c in range(COLS):
+                piece = board.get_piece(r, c)
+                # 确保是自己的已翻开的棋子才能移动
+                if piece and piece.player == self.player_id and piece.revealed:
+                    for dr, dc in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+                        nr, nc = r + dr, c + dc
+                        if 0 <= nr < ROWS and 0 <= nc < COLS:
+                            # **关键改动在这里：使用深拷贝的棋盘进行模拟，并调用 try_move**
+                            temp_board_copy = copy.deepcopy(board) # 深拷贝整个 Board 对象
+                            
+                            # 在临时棋盘上尝试移动
+                            # 这里不需要传递 player_id 给 try_move，因为 try_move 已经包含了棋子玩家的逻辑
+                            if temp_board_copy.try_move((r, c), (nr, nc)):
+                                # 如果在临时棋盘上移动成功，则将此动作视为有效并加入列表
+                                possible_actions.append(("move", (r, c), (nr, nc)))
+                                
+        random.shuffle(possible_actions)
+
+        for action in possible_actions:
             if action[0] == "reveal":
                 r, c = action[1]
-                board[r][c].revealed = True
-                current_player = 1 - current_player
-                return
+                # 再次检查以防万一，确保是自己的未翻开棋子
+                piece = board.get_piece(r, c)
+                if piece and piece.player == self.player_id and not piece.revealed:
+                    piece.revealed = True
+                    return True # Turn ended
             elif action[0] == "move":
-                start, end = action[1], action[2]
-                if is_adjacent(start, end) and board[start[0]][start[1]]:
-                    if try_move(start, end):
-                        current_player = 1 - current_player
-                        return
+                start_pos, end_pos = action[1], action[2]
+                piece_to_move = board.get_piece(start_pos[0], start_pos[1])
+                # 再次检查以防万一，确保移动的棋子是自己的
+                if piece_to_move and piece_to_move.player == self.player_id:
+                    if board.try_move(start_pos, end_pos):
+                        return True # Turn ended
+        return False # No valid moves found
 
-class HeuristicPlayer:
-    def __init__(self,player):
-        self.player = player
-    def eva(self,board):
-        score = 0
+class Game:
+    """Main class to manage the game flow."""
+    def __init__(self):
+        self.board_manager = Board()
+        self.players = {
+            0: HumanPlayer(0), # Red
+            1: RandomPlayer(1)  # Blue
+            # 1: HumanPlayer(1) # For two human players
+        }
+        self.current_player_id = 0
+        self.running = True
+        self._last_human_move_time = 0 # Track when human player last made a move
+        self.AI_DELAY_SECONDS = 1.5 # The delay for AI moves
 
+    def _draw_board(self):
+        """Draws the game board and pieces."""
+        screen.fill(WHITE)
+        for i in range(ROWS):
+            for j in range(COLS):
+                rect = pygame.Rect(j * TILE_SIZE, i * TILE_SIZE, TILE_SIZE, TILE_SIZE)
+                pygame.draw.rect(screen, BLACK, rect, 1) # Cell border
 
+                piece = self.board_manager.get_piece(i, j)
+                if piece:
+                    if piece.revealed:
+                        color = RED if piece.player == 0 else BLUE
+                        pygame.draw.circle(screen, color, rect.center, TILE_SIZE // 3)
+                        text_color = WHITE # Always white text on colored circle for better contrast
+                        text = font.render(str(piece.strength), True, text_color)
+                        text_rect = text.get_rect(center=rect.center)
+                        screen.blit(text, text_rect)
+                    else:
+                        pygame.draw.rect(screen, GREY, rect.inflate(-10, -10)) # Unrevealed piece block
 
-# 初始化控制器
-red_player = HumanControl(0)
-blue_player = RandomPlayer(1)
+        # Highlight selected piece for human player
+        human_player = self.players[0] # Human player is always player 0 in this setup
+        if isinstance(human_player, HumanPlayer) and human_player.get_selected_pos():
+            i, j = human_player.get_selected_pos()
+            rect = pygame.Rect(j * TILE_SIZE, i * TILE_SIZE, TILE_SIZE, TILE_SIZE)
+            pygame.draw.rect(screen, YELLOW, rect, 3)
 
-# 主循环
-running = True
-clock = pygame.time.Clock()
+        # Draw status bar
+        status_bar_rect = pygame.Rect(0, SCREEN_HEIGHT - STATUS_BAR_HEIGHT, SCREEN_WIDTH, STATUS_BAR_HEIGHT)
+        pygame.draw.rect(screen, BLACK, status_bar_rect) # Background for status bar
 
-while running:
-    draw_board()
-    pygame.display.flip()
-    if_terminate()
+        player_name = "Red" if self.current_player_id == 0 else "Blue"
+        text_color = RED if self.current_player_id == 0 else BLUE
+        status_text = f"Current Turn: {player_name}"
 
-    for event in pygame.event.get():
-        if event.type == pygame.QUIT:
-            running = False
-        elif current_player == 0:
-            red_player.handle_event(event)
+        # If it's AI's turn and waiting for delay
+        if self.current_player_id == 1 and (time.time() - self._last_human_move_time) < self.AI_DELAY_SECONDS:
+             status_text += " (AI thinking...)" # Or any other message you want to display
 
+        text_surface = font.render(status_text, True, text_color)
+        screen.blit(text_surface, (10, SCREEN_HEIGHT - STATUS_BAR_HEIGHT + 5))
 
-    if current_player == 1:
+    def _check_game_over(self):
+        """Checks for win/loss conditions and terminates the game if met."""
+        red_pieces = self.board_manager.get_player_pieces(0)
+        blue_pieces = self.board_manager.get_player_pieces(1)
 
-        blue_player.step()
+        if not red_pieces:
+            self._game_over("Blue wins!")
+        elif not blue_pieces:
+            self._game_over("Red wins!")
+        elif len(red_pieces) == 1 and len(blue_pieces) == 1:
+            rr, rc = red_pieces[0]
+            br, bc = blue_pieces[0]
+            if not self.board_manager.is_adjacent((rr, rc), (br, bc)):
+                self._game_over("Draw! (Last pieces not adjacent)")
 
-    
-    if current_player == 1:
-        # print("shit")
-        time.sleep(2000)
-    clock.tick(30)
+    def _game_over(self, message):
+        """Displays game over message and exits."""
+        print(message)
+        self.running = False # Stop the main game loop
 
-pygame.quit()
-sys.exit()
+    def run(self):
+        """Main game loop."""
+        clock = pygame.time.Clock()
+
+        while self.running:
+            for event in pygame.event.get():
+                if event.type == pygame.QUIT:
+                    self.running = False
+                else:
+                    current_player_obj = self.players[self.current_player_id]
+                    if isinstance(current_player_obj, HumanPlayer):
+                        if current_player_obj.handle_event(event, self.board_manager):
+                            self.current_player_id = 1 - self.current_player_id # Switch turn
+                            self._last_human_move_time = time.time() # Record the time of human's last move
+
+            # AI Player's turn logic
+            current_player_obj = self.players[self.current_player_id]
+            if isinstance(current_player_obj, (RandomPlayer)):
+                # Check if enough time has passed since the human's last move
+                if (time.time() - self._last_human_move_time) >= self.AI_DELAY_SECONDS:
+                    if current_player_obj.take_turn(self.board_manager):
+                        self.current_player_id = 1 - self.current_player_id # Switch turn
+                        # No need for time.sleep here as we already handled the delay
+                        # but you could add a very short one if AI move is too fast visually
+                        # time.sleep(0.1)
+
+            self._draw_board()
+            pygame.display.flip()
+            self._check_game_over()
+            clock.tick(30)
+
+        pygame.quit()
+        sys.exit()
+
+# --- Run the Game ---
+if __name__ == "__main__":
+    game = Game()
+    game.run()
