@@ -203,6 +203,14 @@ class RandomPlayer:
                         current_player = 1 - current_player
                         return
 
+class HeuristicPlayer:
+    def __init__(self,player):
+        self.player = player
+    def eva(self,board):
+        score = 0
+
+
+
 # 初始化控制器
 red_player = HumanControl(0)
 blue_player = RandomPlayer(1)
@@ -214,8 +222,6 @@ clock = pygame.time.Clock()
 while running:
     draw_board()
     pygame.display.flip()
-    if current_player == 1:
-        time.sleep(2)
     if_terminate()
 
     for event in pygame.event.get():
@@ -224,9 +230,15 @@ while running:
         elif current_player == 0:
             red_player.handle_event(event)
 
+
     if current_player == 1:
+
         blue_player.step()
 
+    
+    if current_player == 1:
+        # print("shit")
+        time.sleep(2000)
     clock.tick(30)
 
 pygame.quit()
