@@ -22,7 +22,7 @@ YELLOW = (255, 255, 0)
 pygame.init()
 pygame.font.init() # Ensure font module is initialized
 screen = pygame.display.set_mode((SCREEN_WIDTH, SCREEN_HEIGHT))
-pygame.display.set_caption("简化斗兽棋")
+pygame.display.set_caption("简化斗兽棋 - AI 对抗")
 font = pygame.font.SysFont(None, 36)
 
 # --- Game Classes ---
@@ -61,11 +61,18 @@ class Board:
         valid_positions = []
         for r in range(ROWS):
             for c in range(COLS):
-                if r < 1 or r >= ROWS - 1:
+                # 初始布局修改为只放在最顶上两行和最底下两行 (0,1, ROWS-2, ROWS-1)
+                if r < 1 or r >= ROWS - 1: # Rows 0, 1, 5, 6 (for ROWS=7)
                     valid_positions.append((r, c))
 
         random.shuffle(valid_positions)
 
+        # 确保只放置与 pieces 数量相符的棋子
+        # 你的 all_pieces 列表有 16 个棋子 (2 玩家 * 8 强度)
+        # valid_positions 应该至少有 16 个位置。ROWS 7 * COLS 8 = 56
+        # r < 2 (rows 0, 1) -> 2 * 8 = 16 positions
+        # r >= ROWS - 2 (rows 5, 6) -> 2 * 8 = 16 positions
+        # 总共 32 个位置。所以这里的 valid_positions[:len(all_pieces)] 是正确的。
         for piece, (r, c) in zip(all_pieces, valid_positions[:len(all_pieces)]):
             self.board[r][c] = piece
 
@@ -115,7 +122,8 @@ class Board:
             # 4a. 目标棋子未翻开
             if not piece_at_target.revealed:
                 piece_at_target.revealed = True # 翻开目标棋子
-
+                # 如果是自己的未翻开棋子，只是翻开，不能移动过去。
+                # 但仍然算作一回合有效动作。
                 if piece_at_target.player == piece_moving.player:
                     # 自己的棋子不能移动到有自己未翻开棋子的位置，只翻开
                     return True # 翻开即结束本回合
@@ -135,7 +143,7 @@ class Board:
                         return True # 完成捕获，结束本回合
             # 4b. 目标棋子已翻开
             else:
-                
+                # 4b-i. 目标棋子是自己的棋子 (已翻开)
                 if piece_at_target.player == piece_moving.player:
                     return False # 不能吃自己的棋子，也不能移动到有自己已翻开棋子的格子
 
@@ -161,7 +169,6 @@ class Board:
         return [(r, c) for r in range(ROWS) for c in range(COLS)
                 if self.board[r][c] and self.board[r][c].player == player_id]
 
-    ### NEW CODE FOR MINIMAX ###
     def get_all_possible_moves(self, player_id):
         """
         Generates all legal moves and reveal actions for the given player.
@@ -182,13 +189,14 @@ class Board:
                         for dr, dc in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
                             nr, nc = r + dr, c + dc
                             if 0 <= nr < ROWS and 0 <= nc < COLS:
+                                # 对于移动动作，我们模拟执行，看是否是有效回合
+                                # 这里深拷贝是为了 Minimax 模拟，不是给 RandomPlayer 用。
+                                # RandomPlayer 在 take_turn 中会直接在实际 board 上尝试。
+                                # 但这里生成的是所有可能的“合法”动作，所以模拟 check 是合理的。
                                 temp_board_for_check = copy.deepcopy(self) # 模拟此动作
-                                # 注意：这里的 try_move 会修改 temp_board_for_check
-                                # 我们只检查 try_move 是否能成功执行并结束回合
                                 if temp_board_for_check.try_move((r, c), (nr, nc)):
                                     possible_actions.append(("move", (r, c), (nr, nc)))
         return possible_actions
-    ### END NEW CODE FOR MINIMAX ###
 
 
 class Player:
@@ -198,7 +206,8 @@ class Player:
 
     def handle_event(self, event, board):
         """Handles Pygame events (e.g., mouse clicks for human players)."""
-        raise NotImplementedError
+        # 对于AI玩家，这个方法通常不需要实现或直接返回False
+        return False
 
     def take_turn(self, board):
         """Executes a turn for AI players."""
@@ -280,8 +289,6 @@ class RandomPlayer(Player):
         random.shuffle(possible_actions)
 
         for action in possible_actions:
-            # RandomPlayer 在这里不需要深拷贝，因为它是直接在实际 board 上尝试动作
-            # MinimaxPlayer 才需要深拷贝进行模拟
             action_type = action[0]
             if action_type == "reveal":
                 r, c = action[1]
@@ -297,7 +304,6 @@ class RandomPlayer(Player):
                         return True # Turn ended
         return False # No valid moves found
 
-### NEW CODE FOR MINIMAX PLAYER ###
 class MinimaxPlayer(Player):
     def __init__(self, player_id, max_depth=3): # Added max_depth for search
         super().__init__(player_id)
@@ -393,7 +399,6 @@ class MinimaxPlayer(Player):
                 elif action_type == "move":
                     start_pos, end_pos = action[1], action[2]
                     # 在临时棋盘上尝试移动
-                    # 这里不需要再检查 piece_to_move.revealed，因为 get_all_possible_moves 已经过滤了
                     action_performed = temp_board.try_move(start_pos, end_pos)
 
                 if action_performed: # 只有当动作成功执行后，才进行下一步递归
@@ -462,25 +467,22 @@ class MinimaxPlayer(Player):
         return False # 如果没有找到最佳动作或动作失败，不应该发生
 
 
-### END NEW CODE FOR MINIMAX PLAYER ###
-
-
 class Game:
     """Main class to manage the game flow."""
     def __init__(self):
         self.board_manager = Board()
         self.players = {
-            0: HumanPlayer(0), # Red
-            ### MODIFIED CODE ###
-            # 1: RandomPlayer(1), # Original RandomPlayer
-            # 1: HumanPlayer(1) # For two human players
-            1: MinimaxPlayer(1, max_depth=3)  # Blue AI with Minimax. Adjust max_depth for difficulty.
-            # 尝试不同的深度，例如 max_depth=2 会更快但可能没那么智能
+            # 修改这里，将人类玩家替换为AI玩家
+            # 0: MinimaxPlayer(0, max_depth=3), # 红色AI
+            0: RandomPlayer(0), # 红色AI
+            1: MinimaxPlayer(1, max_depth=3)  # 蓝色AI
+            # 或者可以是一个Minimax vs Random
+            # 0: MinimaxPlayer(0, max_depth=3),
+            # 1: RandomPlayer(1)
         }
         self.current_player_id = 0
         self.running = True
-        self._last_human_move_time = 0 # Track when human player last made a move
-        self.AI_DELAY_SECONDS = 0.5 # Reduced delay for Minimax as it might take longer
+        self.AI_DELAY_SECONDS = 0.0 # AI行动之间的延迟，以便观察
 
     def _draw_board(self):
         """Draws the game board and pieces."""
@@ -502,24 +504,20 @@ class Game:
                     else:
                         pygame.draw.rect(screen, GREY, rect.inflate(-10, -10)) # Unrevealed piece block
 
-        # Highlight selected piece for human player
-        human_player = self.players[0] # Human player is always player 0 in this setup
-        if isinstance(human_player, HumanPlayer) and human_player.get_selected_pos():
-            i, j = human_player.get_selected_pos()
-            rect = pygame.Rect(j * TILE_SIZE, i * TILE_SIZE, TILE_SIZE, TILE_SIZE)
-            pygame.draw.rect(screen, YELLOW, rect, 3)
+        # Highlight selected piece for human player (不再需要，但保留以防将来修改为人类玩家)
+        # human_player = self.players[0] 
+        # if isinstance(human_player, HumanPlayer) and human_player.get_selected_pos():
+        #     i, j = human_player.get_selected_pos()
+        #     rect = pygame.Rect(j * TILE_SIZE, i * TILE_SIZE, TILE_SIZE, TILE_SIZE)
+        #     pygame.draw.rect(screen, YELLOW, rect, 3)
 
         # Draw status bar
         status_bar_rect = pygame.Rect(0, SCREEN_HEIGHT - STATUS_BAR_HEIGHT, SCREEN_WIDTH, STATUS_BAR_HEIGHT)
         pygame.draw.rect(screen, BLACK, status_bar_rect) # Background for status bar
 
-        player_name = "Red" if self.current_player_id == 0 else "Blue"
+        player_name = "Red AI" if self.current_player_id == 0 else "Blue AI"
         text_color = RED if self.current_player_id == 0 else BLUE
-        status_text = f"Current Turn: {player_name}"
-
-        # If it's AI's turn and waiting for delay
-        if self.current_player_id == 1 and (time.time() - self._last_human_move_time) < self.AI_DELAY_SECONDS:
-             status_text += " (AI thinking...)" # Or any other message you want to display
+        status_text = f"Current Turn: {player_name} (AI thinking...)"
 
         text_surface = font.render(status_text, True, text_color)
         screen.blit(text_surface, (10, SCREEN_HEIGHT - STATUS_BAR_HEIGHT + 5))
@@ -530,12 +528,11 @@ class Game:
         blue_pieces = self.board_manager.get_player_pieces(1)
 
         if not red_pieces:
-            self._game_over("Blue wins!")
+            self._game_over("Blue AI wins!")
             return True
         elif not blue_pieces:
-            self._game_over("Red wins!")
+            self._game_over("Red AI wins!")
             return True
-        ### MODIFIED CODE ###
         # 更精确的和棋判断：只剩一颗棋子且无法互相捕获或不相邻
         elif len(red_pieces) == 1 and len(blue_pieces) == 1:
             rr, rc = red_pieces[0]
@@ -556,7 +553,7 @@ class Game:
                         self._game_over("Draw! (Stalemate - last pieces cannot capture each other)")
                         return True
                 else: # 如果不相邻，也无法捕获，则为和棋
-                    self._game_over("Draw! (Last pieces not adjacent)")
+                    self._game_over("Draw! (Last pieces not adjacent or cannot capture)")
                     return True
             # 如果有一方或双方未翻开，游戏继续 (因为信息不完全，未来可能仍有变化)
         return False # 游戏未结束
@@ -576,37 +573,30 @@ class Game:
             for event in pygame.event.get():
                 if event.type == pygame.QUIT:
                     self.running = False
-                else:
-                    current_player_obj = self.players[self.current_player_id]
-                    if isinstance(current_player_obj, HumanPlayer):
-                        if current_player_obj.handle_event(event, self.board_manager):
-                            # Only switch turn if the human player successfully made a move/reveal
-                            # 立即检查游戏是否结束，如果是则停止循环
-                            if self._check_game_over():
-                                self.running = False 
-                            else:
-                                self.current_player_id = 1 - self.current_player_id # Switch turn
-                                self._last_human_move_time = time.time() # Record the time of human's last move
+                # 移除了人类玩家事件处理逻辑
 
-
-            # AI Player's turn logic
             current_player_obj = self.players[self.current_player_id]
-            ### MODIFIED CODE ###
-            if isinstance(current_player_obj, (RandomPlayer, MinimaxPlayer)): # 现在也包含 MinimaxPlayer
-                # 检查是否满足 AI 延迟
-                if (time.time() - self._last_human_move_time) >= self.AI_DELAY_SECONDS:
-                    # 让 AI 执行回合
-                    if current_player_obj.take_turn(self.board_manager):
-                        # 仅在 AI 成功执行动作后切换回合
-                        if self._check_game_over(): # 立即检查游戏是否结束
-                            self.running = False
-                        else:
-                            self.current_player_id = 1 - self.current_player_id # 切换回合
-                        
+            
+            # AI 玩家的回合逻辑
+            # AI 不依赖事件，直接在循环中执行
+            time.sleep(self.AI_DELAY_SECONDS) # 增加延迟，方便观察
+
+            if current_player_obj.take_turn(self.board_manager):
+                # 仅在 AI 成功执行动作后切换回合
+                if self._check_game_over(): # 立即检查游戏是否结束
+                    self.running = False
+                else:
+                    self.current_player_id = 1 - self.current_player_id # 切换回合
+            else:
+                # 如果AI没有找到任何合法动作（极少发生，通常意味着游戏结束了）
+                # 可以在这里添加一个平局判断或者其他处理
+                print(f"Player {self.current_player_id} could not make a valid move. Game might be stuck or draw.")
+                self._game_over("Draw! (No valid moves left for current player)")
+                self.running = False # 结束游戏
+
             self._draw_board()
             pygame.display.flip()
-            # _check_game_over 现在在玩家行动后立即调用，所以主循环中不需要重复调用
-            clock.tick(30)
+            clock.tick(30) # 控制帧率
 
         pygame.quit()
         sys.exit()
