@@ -403,7 +403,7 @@ class MinimaxPlayer(Player):
 
                 if action_performed: # 只有当动作成功执行后，才进行下一步递归
                     # 递归调用 Minimax，切换到对手玩家
-                    eval, _ = self._minimax(temp_board, depth - 1, self.opponent_id)
+                    eval, _ = self._minimax(temp_board, depth - 1, 1 - current_player)
                     if eval > max_eval:
                         max_eval = eval
                         best_move = action
@@ -433,7 +433,7 @@ class MinimaxPlayer(Player):
 
                 if action_performed:
                     # 递归调用 Minimax，切换回 AI 玩家
-                    eval, _ = self._minimax(temp_board, depth - 1, self.player_id)
+                    eval, _ = self._minimax(temp_board, depth - 1, 1 - current_player)
                     if eval < min_eval:
                         min_eval = eval
                         best_move = action
@@ -468,13 +468,15 @@ class MinimaxPlayer(Player):
 
 
 class Game:
-    """Main class to manage the game flow."""
+    MAX_STEPS = 500  # 最大允许步数
+
     def __init__(self):
         self.board_manager = Board()
         self.players = {
             # 修改这里，将人类玩家替换为AI玩家
-            # 0: MinimaxPlayer(0, max_depth=3), # 红色AI
-            0: RandomPlayer(0), # 红色AI
+            # 0: MinimaxPlayer(0, max_depth=1), # 红色AI
+            0: QLearningPlayer(0), # 红色AI
+            # 0: RandomPlayer(0), # 红色AI
             1: MinimaxPlayer(1, max_depth=3)  # 蓝色AI
             # 或者可以是一个Minimax vs Random
             # 0: MinimaxPlayer(0, max_depth=3),
@@ -582,8 +584,13 @@ class Game:
             time.sleep(self.AI_DELAY_SECONDS) # 增加延迟，方便观察
 
             if current_player_obj.take_turn(self.board_manager):
-                # 仅在 AI 成功执行动作后切换回合
-                if self._check_game_over(): # 立即检查游戏是否结束
+                # 只在AI成功执行动作后更新计数器
+                step_count = 0
+                
+                # 在AI成功执行动作后更新计数器
+                step_count += 1
+                if step_count >= self.MAX_STEPS:
+                    self._game_over(f"平局！双方操作超过{self.MAX_STEPS}步")
                     self.running = False
                 else:
                     self.current_player_id = 1 - self.current_player_id # 切换回合
@@ -591,7 +598,7 @@ class Game:
                 # 如果AI没有找到任何合法动作（极少发生，通常意味着游戏结束了）
                 # 可以在这里添加一个平局判断或者其他处理
                 print(f"Player {self.current_player_id} could not make a valid move. Game might be stuck or draw.")
-                self._game_over("Draw! (No valid moves left for current player)")
+                self._game_over("Draw! (No valid moves left for current player or stuck state)")
                 self.running = False # 结束游戏
 
             self._draw_board()
@@ -605,3 +612,4 @@ class Game:
 if __name__ == "__main__":
     game = Game()
     game.run()
+
