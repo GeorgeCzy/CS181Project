@@ -34,8 +34,6 @@ class Piece:
         self.strength = strength
         self.revealed = False
     
-    # 为了深拷贝 Piece 对象，我们需要实现 __copy__ 或 __deepcopy__
-    # 对于这个简单的类，浅拷贝它的属性通常就足够了，但为了严谨，可以实现深拷贝
     def __deepcopy__(self, memo):
         cls = self.__class__
         result = cls.__new__(cls)
@@ -375,6 +373,9 @@ class MinimaxPlayer(Player):
         current_player = maximizing_player_id
         is_maximizing_player = (current_player == self.player_id)
 
+        min_strength_value = min((piece.strength for row in board.board for piece in row if piece and piece.revealed), default=0)
+        max_strength_value = max((piece.strength for row in board.board for piece in row if piece and piece.revealed), default=0)
+        
         best_move = None
         # 如果是最大化玩家（AI自己）
         if is_maximizing_player:
@@ -394,7 +395,19 @@ class MinimaxPlayer(Player):
                     r, c = action[1]
                     piece = temp_board.get_piece(r, c)
                     if piece and piece.player == current_player and not piece.revealed:
+                        # 假设翻开的棋子可能是最强或最弱的情况，进行两次递归评估
                         piece.revealed = True
+                        original_strength = piece.strength
+                        # 假设为最强
+                        piece.strength = max_strength_value
+                        eval_strong, _ = self._minimax(temp_board, depth - 1, 1 - current_player)
+                        # 假设为最弱
+                        piece.strength = min_strength_value
+                        eval_weak, _ = self._minimax(temp_board, depth - 1, 1 - current_player)
+                        # 恢复原始强度
+                        piece.strength = original_strength
+                        # 取两者的平均值作为评估
+                        eval = (eval_strong + eval_weak) / 2
                         action_performed = True
                 elif action_type == "move":
                     start_pos, end_pos = action[1], action[2]
@@ -468,14 +481,14 @@ class MinimaxPlayer(Player):
 
 
 class Game:
-    MAX_STEPS = 500  # 最大允许步数
+    MAX_STEPS = 8000  # 最大允许步数
 
     def __init__(self):
         self.board_manager = Board()
         self.players = {
             # 修改这里，将人类玩家替换为AI玩家
-            # 0: MinimaxPlayer(0, max_depth=1), # 红色AI
-            0: QLearningPlayer(0), # 红色AI
+            0: MinimaxPlayer(0, max_depth=1), # 红色AI
+            # 0: QLearningPlayer(0), # 红色AI
             # 0: RandomPlayer(0), # 红色AI
             1: MinimaxPlayer(1, max_depth=3)  # 蓝色AI
             # 或者可以是一个Minimax vs Random
@@ -535,7 +548,6 @@ class Game:
         elif not blue_pieces:
             self._game_over("Red AI wins!")
             return True
-        # 更精确的和棋判断：只剩一颗棋子且无法互相捕获或不相邻
         elif len(red_pieces) == 1 and len(blue_pieces) == 1:
             rr, rc = red_pieces[0]
             br, bc = blue_pieces[0]
@@ -545,18 +557,19 @@ class Game:
             # 只有当两个棋子都已翻开时，才能判断是否能互相捕获
             if red_piece.revealed and blue_piece.revealed:
                 can_red_attack = (red_piece.strength > blue_piece.strength) or \
-                                 (red_piece.strength == 1 and blue_piece.strength == 8)
+                                (red_piece.strength == 1 and blue_piece.strength == 8)
                 can_blue_attack = (blue_piece.strength > red_piece.strength) or \
-                                  (blue_piece.strength == 1 and red_piece.strength == 8)
-                
+                                (blue_piece.strength == 1 and red_piece.strength == 8)
+
                 # 如果它们相邻，且双方都无法捕获对方，则为和棋
                 if self.board_manager.is_adjacent((rr, rc), (br, bc)):
                     if not can_red_attack and not can_blue_attack:
                         self._game_over("Draw! (Stalemate - last pieces cannot capture each other)")
                         return True
                 else: # 如果不相邻，也无法捕获，则为和棋
-                    self._game_over("Draw! (Last pieces not adjacent or cannot capture)")
-                    return True
+                    if not can_red_attack and not can_blue_attack:
+                        self._game_over("Draw! (Last pieces not adjacent or cannot capture)")
+                        return True
             # 如果有一方或双方未翻开，游戏继续 (因为信息不完全，未来可能仍有变化)
         return False # 游戏未结束
 
@@ -589,8 +602,13 @@ class Game:
                 
                 # 在AI成功执行动作后更新计数器
                 step_count += 1
-                if step_count >= self.MAX_STEPS:
+                if self._check_game_over():
+                    self.running = False
+                elif step_count >= self.MAX_STEPS:
                     self._game_over(f"平局！双方操作超过{self.MAX_STEPS}步")
+                    self.running = False
+                elif not self.board_manager.get_player_pieces(self.current_player_id):
+                    self._game_over(f"{player_name}没有棋子可以操作，游戏结束！")
                     self.running = False
                 else:
                     self.current_player_id = 1 - self.current_player_id # 切换回合
@@ -612,4 +630,3 @@ class Game:
 if __name__ == "__main__":
     game = Game()
     game.run()
-
