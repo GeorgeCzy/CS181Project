@@ -301,7 +301,170 @@ class RandomPlayer(Player):
                     if board.try_move(start_pos, end_pos):
                         return True # Turn ended
         return False # No valid moves found
+class GreedyPlayer(Player):
+    """An AI player that uses heuristic evaluation to make greedy moves."""
+    def __init__(self, player_id):
+        super().__init__(player_id)
+        self.opponent_id = 1 - player_id
 
+    def _evaluate_board(self, board):
+        """
+        Evaluates the current board state using heuristics.
+        Based on the presentation's comprehensive formula:
+        Score(s) = Σ(my pieces) - λ₁Σ(opp pieces) + λ₂·Mobility + λ₃·Advancing
+        """
+        score = 0
+        
+        # Base piece values (Elephant=100, Lion=90, Tiger=80, ..., Rat=10)
+        piece_values = {8: 100, 7: 90, 6: 80, 5: 70, 4: 60, 3: 50, 2: 40, 1: 10}
+        
+        # Get pieces for both players
+        self_pieces = board.get_player_pieces(self.player_id)
+        opponent_pieces = board.get_player_pieces(self.opponent_id)
+        
+        # Check for game-ending states
+        if not opponent_pieces:
+            return float('inf')  # Win
+        if not self_pieces:
+            return float('-inf')  # Loss
+            
+        # 1. Base Score - piece values
+        for r, c in self_pieces:
+            piece = board.get_piece(r, c)
+            if piece and piece.revealed:
+                score += piece_values[piece.strength]
+            else:
+                score += 30  # Average value for unrevealed pieces
+        λ_1 = 0.8        
+        for r, c in opponent_pieces:
+            piece = board.get_piece(r, c)
+            if piece and piece.revealed:
+                score -= piece_values[piece.strength] * λ_1
+            else:
+                score -= 30 * λ_1
+        
+        # 2. Positional Rewards - Advancing (closer to opponent's backline)
+        λ_3 = 15  # Advancing bonus weight
+        for r, c in self_pieces:
+            piece = board.get_piece(r, c)
+            if piece and piece.revealed:
+                if self.player_id == 0:  # Red player (advancing towards bottom)
+                    advance_score = r * 5  # More points for being further down
+                else:  # Blue player (advancing towards top)
+                    advance_score = (ROWS - 1 - r) * 5  # More points for being further up
+                score += advance_score * λ_3 / 10
+                
+                # Central control bonus
+                center_cols = [COLS//2 - 1, COLS//2]
+                if c in center_cols:
+                    score += 5
+        
+        # 3. Mobility - count available moves
+        λ_2 = 2  # Mobility weight
+        possible_actions = board.get_all_possible_moves(self.player_id)
+        score += len(possible_actions) * λ_2
+        
+        # 4. Safety Penalty - threatened pieces
+        safety_weight = 10
+        for sr, sc in self_pieces:
+            self_piece = board.get_piece(sr, sc)
+            if self_piece and self_piece.revealed:
+                for er, ec in opponent_pieces:
+                    opponent_piece = board.get_piece(er, ec)
+                    if opponent_piece and opponent_piece.revealed:
+                        if board.is_adjacent((sr, sc), (er, ec)):
+                            # Check if we're threatened
+                            if (opponent_piece.strength > self_piece.strength and 
+                                not (opponent_piece.strength == 8 and self_piece.strength == 1)) or \
+                               (opponent_piece.strength == 1 and self_piece.strength == 8):
+                                score -= safety_weight
+                            # Check if we can threaten
+                            elif (self_piece.strength > opponent_piece.strength and 
+                                  not (self_piece.strength == 8 and opponent_piece.strength == 1)) or \
+                                 (self_piece.strength == 1 and opponent_piece.strength == 8):
+                                score += safety_weight * 1.5  # Bonus for threatening
+        
+        return score
+
+    def _evaluate_action(self, board, action):
+        """
+        Evaluates a specific action by simulating it and scoring the resulting board.
+        Returns the score difference (new_score - current_score).
+        """
+        # Get current board score
+        current_score = self._evaluate_board(board)
+        
+        # Simulate the action on a copy of the board
+        temp_board = copy.deepcopy(board)
+        
+        action_type = action[0]
+        action_successful = False
+        
+        if action_type == "reveal":
+            r, c = action[1]
+            piece = temp_board.get_piece(r, c)
+            if piece and piece.player == self.player_id and not piece.revealed:
+                piece.revealed = True
+                action_successful = True
+        elif action_type == "move":
+            start_pos, end_pos = action[1], action[2]
+            action_successful = temp_board.try_move(start_pos, end_pos)
+        
+        if not action_successful:
+            return float('-inf')  # Invalid action
+            
+        # Get new board score after action
+        new_score = self._evaluate_board(temp_board)
+        
+        return new_score - current_score
+
+    def take_turn(self, board):
+        """
+        Chooses the best action based on heuristic evaluation.
+        This is a greedy approach - evaluates all possible moves and picks the best one.
+        """
+        print(f"Greedy Player {self.player_id} thinking...")
+        start_time = time.time()
+        
+        # Get all possible actions
+        possible_actions = board.get_all_possible_moves(self.player_id)
+        
+        if not possible_actions:
+            return False  # No valid moves
+        
+        # Evaluate each action and find the best one
+        best_action = None
+        best_score = float('-inf')
+        
+        for action in possible_actions:
+            action_score = self._evaluate_action(board, action)
+            
+            # Add small random factor to break ties
+            action_score += random.uniform(-0.1, 0.1)
+            
+            if action_score > best_score:
+                best_score = action_score
+                best_action = action
+        
+        end_time = time.time()
+        print(f"Greedy found best action: {best_action} with score improvement {best_score:.2f} in {end_time - start_time:.3f} seconds")
+        
+        # Execute the best action
+        if best_action:
+            action_type = best_action[0]
+            if action_type == "reveal":
+                r, c = best_action[1]
+                piece = board.get_piece(r, c)
+                if piece and piece.player == self.player_id and not piece.revealed:
+                    piece.revealed = True
+                    return True
+            elif action_type == "move":
+                start_pos, end_pos = best_action[1], best_action[2]
+                piece_to_move = board.get_piece(start_pos[0], start_pos[1])
+                if piece_to_move and piece_to_move.player == self.player_id:
+                    return board.try_move(start_pos, end_pos)
+        
+        return False
 class MinimaxPlayer(Player):
     def __init__(self, player_id, max_depth=3): # Added max_depth for search
         super().__init__(player_id)
@@ -490,7 +653,7 @@ class Game:
             0: MinimaxPlayer(0, max_depth=1), # 红色AI
             # 0: QLearningPlayer(0), # 红色AI
             # 0: RandomPlayer(0), # 红色AI
-            1: MinimaxPlayer(1, max_depth=3)  # 蓝色AI
+            1: GreedyPlayer(1)  # 蓝色AI
             # 或者可以是一个Minimax vs Random
             # 0: MinimaxPlayer(0, max_depth=3),
             # 1: RandomPlayer(1)
