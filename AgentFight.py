@@ -771,6 +771,7 @@ class Game:
                     self._game_over(f"平局！双方操作超过{self.MAX_STEPS}步")
                     self.running = False
                 elif not self.board_manager.get_player_pieces(self.current_player_id):
+                    player_name = "Red AI" if self.current_player_id == 0 else "Blue AI"
                     self._game_over(f"{player_name}没有棋子可以操作，游戏结束！")
                     self.running = False
                 else:
