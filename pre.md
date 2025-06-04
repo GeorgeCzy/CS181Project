@@ -473,9 +473,7 @@ $$y_i = r_i + \gamma \max_{a'} Q_{target}(s'_i, a')$$
 Mean Squared Error (MSE) loss is used:
 $$\mathcal{L}(\theta) = \frac{1}{B}\sum_{i=1}^{B}[Q(s_i, a_i; \theta) - y_i]^2$$
 
----
-
-### 3.3 Optimizer
+---### 3.3 Optimizer
 
 Adam optimizer is used:
 - Learning rate: $\alpha = 10^{-4}$

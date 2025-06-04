@@ -17,9 +17,11 @@ BLACK = (0, 0, 0)
 RED = (220, 50, 50)
 BLUE = (50, 50, 220)
 GREY = (180, 180, 180)
-YELLOW = (255, 255, 0)
+YELLOW = (255, 255, 204)
+GREEN = (153, 255, 153)
 LIGHT_GREY = (211, 211, 211)
 DARK_GREY = (169, 169, 169)
+
 
 pygame.init()
 pygame.font.init() # Ensure font module is initialized
@@ -676,9 +678,9 @@ class Game:
                 rect = pygame.Rect(j * TILE_SIZE, i * TILE_SIZE, TILE_SIZE, TILE_SIZE)
                 # 交替颜色
                 if (i + j) % 2 == 0:
-                    pygame.draw.rect(screen, LIGHT_GREY, rect) # 明色格子
+                    pygame.draw.rect(screen, GREEN, rect) # 明色格子
                 else:
-                    pygame.draw.rect(screen, DARK_GREY, rect) # 暗色格子
+                    pygame.draw.rect(screen, YELLOW, rect) # 暗色格子
                 pygame.draw.rect(screen, BLACK, rect, 1) # Cell border
 
                 piece = self.board_manager.get_piece(i, j)
@@ -692,7 +694,7 @@ class Game:
                         screen.blit(text, text_rect)
                     else:
                         # 在棋盘上绘制未揭示的棋子
-                        pygame.draw.circle(screen, BLACK, rect.center, TILE_SIZE // 3) # 使用 rect.center 代替 (x, y)
+                        pygame.draw.circle(screen, LIGHT_GREY, rect.center, TILE_SIZE // 3) # 使用 rect.center 代替 (x, y)
                         # pygame.draw.rect(screen, GREY, rect.inflate(-10, -10)) # Unrevealed piece block
 
         # Highlight selected piece for human player (不再需要，但保留以防将来修改为人类玩家)
