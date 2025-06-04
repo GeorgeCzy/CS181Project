@@ -18,6 +18,8 @@ RED = (220, 50, 50)
 BLUE = (50, 50, 220)
 GREY = (180, 180, 180)
 YELLOW = (255, 255, 0)
+LIGHT_GREY = (211, 211, 211)
+DARK_GREY = (169, 169, 169)
 
 pygame.init()
 pygame.font.init() # Ensure font module is initialized
@@ -643,19 +645,23 @@ class MinimaxPlayer(Player):
         return False # 如果没有找到最佳动作或动作失败，不应该发生
 
 
+
+MAX_STEPS = 800  # 最大允许步数
+
 class Game:
-    MAX_STEPS = 8000  # 最大允许步数
 
     def __init__(self):
         self.board_manager = Board()
         self.players = {
             # 修改这里，将人类玩家替换为AI玩家
-            0: MinimaxPlayer(0, max_depth=1), # 红色AI
+            # 0: MinimaxPlayer(0, max_depth=1), # 红色AI
             # 0: QLearningPlayer(0), # 红色AI
-            # 0: RandomPlayer(0), # 红色AI
+            0: RandomPlayer(0), # 红色AI
             1: GreedyPlayer(1)  # 蓝色AI
             # 或者可以是一个Minimax vs Random
             # 0: MinimaxPlayer(0, max_depth=3),
+            # 0: GreedyPlayer(0),
+            # 1: MinimaxPlayer(1, max_depth=3),
             # 1: RandomPlayer(1)
         }
         self.current_player_id = 0
@@ -668,19 +674,26 @@ class Game:
         for i in range(ROWS):
             for j in range(COLS):
                 rect = pygame.Rect(j * TILE_SIZE, i * TILE_SIZE, TILE_SIZE, TILE_SIZE)
+                # 交替颜色
+                if (i + j) % 2 == 0:
+                    pygame.draw.rect(screen, LIGHT_GREY, rect) # 明色格子
+                else:
+                    pygame.draw.rect(screen, DARK_GREY, rect) # 暗色格子
                 pygame.draw.rect(screen, BLACK, rect, 1) # Cell border
 
                 piece = self.board_manager.get_piece(i, j)
                 if piece:
                     if piece.revealed:
                         color = RED if piece.player == 0 else BLUE
-                        pygame.draw.circle(screen, color, rect.center, TILE_SIZE // 3)
+                        pygame.draw.circle(screen, color, rect.center, TILE_SIZE // 3) # 使用 rect.center 代替 (x, y)
                         text_color = WHITE # Always white text on colored circle for better contrast
                         text = font.render(str(piece.strength), True, text_color)
                         text_rect = text.get_rect(center=rect.center)
                         screen.blit(text, text_rect)
                     else:
-                        pygame.draw.rect(screen, GREY, rect.inflate(-10, -10)) # Unrevealed piece block
+                        # 在棋盘上绘制未揭示的棋子
+                        pygame.draw.circle(screen, BLACK, rect.center, TILE_SIZE // 3) # 使用 rect.center 代替 (x, y)
+                        # pygame.draw.rect(screen, GREY, rect.inflate(-10, -10)) # Unrevealed piece block
 
         # Highlight selected piece for human player (不再需要，但保留以防将来修改为人类玩家)
         # human_player = self.players[0] 
@@ -734,6 +747,7 @@ class Game:
                         self._game_over("Draw! (Last pieces not adjacent or cannot capture)")
                         return True
             # 如果有一方或双方未翻开，游戏继续 (因为信息不完全，未来可能仍有变化)
+            
         return False # 游戏未结束
 
     def _game_over(self, message):
@@ -746,7 +760,8 @@ class Game:
     def run(self):
         """Main game loop."""
         clock = pygame.time.Clock()
-
+        
+        step_count = 0
         while self.running:
             for event in pygame.event.get():
                 if event.type == pygame.QUIT:
@@ -761,18 +776,17 @@ class Game:
 
             if current_player_obj.take_turn(self.board_manager):
                 # 只在AI成功执行动作后更新计数器
-                step_count = 0
                 
                 # 在AI成功执行动作后更新计数器
                 step_count += 1
                 if self._check_game_over():
                     self.running = False
-                elif step_count >= self.MAX_STEPS:
-                    self._game_over(f"平局！双方操作超过{self.MAX_STEPS}步")
+                elif step_count >= MAX_STEPS:
+                    self._game_over(f"draw, exceeded {MAX_STEPS} steps")
                     self.running = False
                 elif not self.board_manager.get_player_pieces(self.current_player_id):
                     player_name = "Red AI" if self.current_player_id == 0 else "Blue AI"
-                    self._game_over(f"{player_name}没有棋子可以操作，游戏结束！")
+                    self._game_over(f"{player_name} no movements avaliabe")
                     self.running = False
                 else:
                     self.current_player_id = 1 - self.current_player_id # 切换回合
@@ -785,6 +799,7 @@ class Game:
 
             self._draw_board()
             pygame.display.flip()
+            # pygame.time.wait(5000) # 暂停5秒
             clock.tick(30) # 控制帧率
 
         pygame.quit()
