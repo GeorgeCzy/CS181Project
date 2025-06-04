@@ -471,10 +471,11 @@ class Game:
         self.board_manager = Board()
         self.players = {
             0: HumanPlayer(0), # Red
+            1: HumanPlayer(1)
             ### MODIFIED CODE ###
             # 1: RandomPlayer(1), # Original RandomPlayer
             # 1: HumanPlayer(1) # For two human players
-            1: MinimaxPlayer(1, max_depth=3)  # Blue AI with Minimax. Adjust max_depth for difficulty.
+            # 1: MinimaxPlayer(1, max_depth=3)  # Blue AI with Minimax. Adjust max_depth for difficulty.
             # 尝试不同的深度，例如 max_depth=2 会更快但可能没那么智能
         }
         self.current_player_id = 0
