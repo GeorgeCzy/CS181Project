@@ -1,0 +1,200 @@
+Run 1 Last Line:
+Red AI wins!
+
+========================================
+Run 2 Last Line:
+draw, exceeded 800 steps
+
+========================================
+Run 3 Last Line:
+draw, exceeded 800 steps
+
+========================================
+Run 4 Last Line:
+draw, exceeded 800 steps
+
+========================================
+Run 5 Last Line:
+draw, exceeded 800 steps
+
+========================================
+Run 6 Last Line:
+draw, exceeded 800 steps
+
+========================================
+Run 7 Last Line:
+Red AI wins!
+
+========================================
+Run 8 Last Line:
+draw, exceeded 800 steps
+
+========================================
+Run 9 Last Line:
+draw, exceeded 800 steps
+
+========================================
+Run 10 Last Line:
+Blue AI wins!
+
+========================================
+Run 11 Last Line:
+draw, exceeded 800 steps
+
+========================================
+Run 12 Last Line:
+draw, exceeded 800 steps
+
+========================================
+Run 13 Last Line:
+Red AI wins!
+
+========================================
+Run 14 Last Line:
+Red AI wins!
+
+========================================
+Run 15 Last Line:
+draw, exceeded 800 steps
+
+========================================
+Run 16 Last Line:
+Red AI wins!
+
+========================================
+Run 17 Last Line:
+draw, exceeded 800 steps
+
+========================================
+Run 18 Last Line:
+draw, exceeded 800 steps
+
+========================================
+Run 19 Last Line:
+draw, exceeded 800 steps
+
+========================================
+Run 20 Last Line:
+draw, exceeded 800 steps
+
+========================================
+Run 21 Last Line:
+draw, exceeded 800 steps
+
+========================================
+Run 22 Last Line:
+Red AI wins!
+
+========================================
+Run 23 Last Line:
+draw, exceeded 800 steps
+
+========================================
+Run 24 Last Line:
+draw, exceeded 800 steps
+
+========================================
+Run 25 Last Line:
+draw, exceeded 800 steps
+
+========================================
+Run 26 Last Line:
+draw, exceeded 800 steps
+
+========================================
+Run 27 Last Line:
+Red AI wins!
+
+========================================
+Run 28 Last Line:
+draw, exceeded 800 steps
+
+========================================
+Run 29 Last Line:
+Red AI wins!
+
+========================================
+Run 30 Last Line:
+Red AI wins!
+
+========================================
+Run 31 Last Line:
+Red AI wins!
+
+========================================
+Run 32 Last Line:
+draw, exceeded 800 steps
+
+========================================
+Run 33 Last Line:
+draw, exceeded 800 steps
+
+========================================
+Run 34 Last Line:
+draw, exceeded 800 steps
+
+========================================
+Run 35 Last Line:
+Red AI wins!
+
+========================================
+Run 36 Last Line:
+draw, exceeded 800 steps
+
+========================================
+Run 37 Last Line:
+Red AI wins!
+
+========================================
+Run 38 Last Line:
+draw, exceeded 800 steps
+
+========================================
+Run 39 Last Line:
+draw, exceeded 800 steps
+
+========================================
+Run 40 Last Line:
+draw, exceeded 800 steps
+
+========================================
+Run 41 Last Line:
+Red AI wins!
+
+========================================
+Run 42 Last Line:
+draw, exceeded 800 steps
+
+========================================
+Run 43 Last Line:
+draw, exceeded 800 steps
+
+========================================
+Run 44 Last Line:
+draw, exceeded 800 steps
+
+========================================
+Run 45 Last Line:
+draw, exceeded 800 steps
+
+========================================
+Run 46 Last Line:
+draw, exceeded 800 steps
+
+========================================
+Run 47 Last Line:
+Red AI wins!
+
+========================================
+Run 48 Last Line:
+draw, exceeded 800 steps
+
+========================================
+Run 49 Last Line:
+draw, exceeded 800 steps
+
+========================================
+Run 50 Last Line:
+draw, exceeded 800 steps
+
+========================================
