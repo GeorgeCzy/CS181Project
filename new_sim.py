@@ -3,212 +3,16 @@ import random
 import sys
 import time
 import copy # 导入 copy 模块用于深拷贝
+from MCTS import MCTSAgent
+from base import Player, Board, Piece, screen, font, small_font, ROWS, COLS, TILE_SIZE, SCREEN_WIDTH, SCREEN_HEIGHT, STATUS_BAR_HEIGHT, WHITE, BLACK, RED, BLUE, GREY, YELLOW, GREEN
 
-# --- Constants and Initialization ---
-# Game Settings
-ROWS, COLS = 7, 8
-TILE_SIZE = 80
-SCREEN_WIDTH, SCREEN_HEIGHT = COLS * TILE_SIZE, ROWS * TILE_SIZE + 40
-STATUS_BAR_HEIGHT = 40 # Added for clarity
-
-# Colors
-WHITE = (255, 255, 255)
-BLACK = (0, 0, 0)
-RED = (220, 50, 50)
-BLUE = (50, 50, 220)
-GREY = (180, 180, 180)
-YELLOW = (255, 255, 0)
-
-pygame.init()
-pygame.font.init() # Ensure font module is initialized
-screen = pygame.display.set_mode((SCREEN_WIDTH, SCREEN_HEIGHT))
-pygame.display.set_caption("简化斗兽棋")
-font = pygame.font.SysFont(None, 36)
-
-# --- Game Classes ---
-
-class Piece:
-    """Represents a single game piece with player and strength."""
-    def __init__(self, player, strength):
-        self.player = player  # 0 = Red, 1 = Blue
-        self.strength = strength
-        self.revealed = False
-    
-    # 为了深拷贝 Piece 对象，我们需要实现 __copy__ 或 __deepcopy__
-    # 对于这个简单的类，浅拷贝它的属性通常就足够了，但为了严谨，可以实现深拷贝
-    def __deepcopy__(self, memo):
-        cls = self.__class__
-        result = cls.__new__(cls)
-        memo[id(self)] = result
-        for k, v in self.__dict__.items():
-            setattr(result, k, copy.deepcopy(v, memo))
-        return result
-
-class Board:
-    """Manages the game board state and piece placement."""
-    def __init__(self):
-        self.board = [[None for _ in range(COLS)] for _ in range(ROWS)]
-        self._initialize_pieces()
-
-    def _initialize_pieces(self):
-        """Initializes and shuffles all pieces on the board."""
-        all_pieces = [Piece(player, strength)
-                      for player in [0, 1]
-                      for strength in range(1, 9)]
-        random.shuffle(all_pieces)
-
-        # Pieces are placed only on the top and bottom two rows
-        valid_positions = []
-        for r in range(ROWS):
-            for c in range(COLS):
-                if r < 1 or r >= ROWS - 1:
-                    valid_positions.append((r, c))
-
-        random.shuffle(valid_positions)
-
-        for piece, (r, c) in zip(all_pieces, valid_positions[:len(all_pieces)]):
-            self.board[r][c] = piece
-
-    def get_piece(self, row, col):
-        """Returns the piece at the given coordinates."""
-        if 0 <= row < ROWS and 0 <= col < COLS:
-            return self.board[row][col]
-        return None
-
-    def set_piece(self, row, col, piece):
-        """Sets a piece at the given coordinates."""
-        if 0 <= row < ROWS and 0 <= col < COLS:
-            self.board[row][col] = piece
-
-    def is_adjacent(self, pos1, pos2):
-        """Checks if two positions are adjacent (horizontal or vertical)."""
-        r1, c1 = pos1
-        r2, c2 = pos2
-        return abs(r1 - r2) + abs(c1 - c2) == 1
-
-    def try_move(self, start_pos, end_pos):
-        """
-        Attempts to move a piece from start_pos to end_pos, handling captures.
-        Returns True if the move was successful, False otherwise.
-        Note: This method modifies the board directly.
-        """
-        sr, sc = start_pos
-        er, ec = end_pos
-        piece_moving = self.get_piece(sr, sc)
-        piece_at_target = self.get_piece(er, ec)
-
-        # 1. 移动棋子不存在
-        if not piece_moving:
-            return False
-
-        # 2. 目标位置不是相邻的
-        if not self.is_adjacent(start_pos, end_pos):
-            return False
-
-        # 3. 目标位置为空
-        if piece_at_target is None:
-            self.set_piece(er, ec, piece_moving)
-            self.set_piece(sr, sc, None)
-            return True
-        # 4. 目标位置有棋子
-        else:
-            # 4a. 目标棋子未翻开
-            if not piece_at_target.revealed:
-                piece_at_target.revealed = True # 翻开目标棋子
-
-                if piece_at_target.player == piece_moving.player:
-                    # 自己的棋子不能移动到有自己未翻开棋子的位置，只翻开
-                    return True # 翻开即结束本回合
-                else:
-                    # 如果是对手的未翻开棋子，进行捕获判断（强度比较）
-                    if (piece_moving.strength > piece_at_target.strength and not (piece_moving.strength == 8 and piece_at_target.strength == 1)) or \
-                       (piece_moving.strength == 1 and piece_at_target.strength == 8): # 鼠吃象
-                        self.set_piece(er, ec, piece_moving)
-                        self.set_piece(sr, sc, None)
-                        return True
-                    elif piece_moving.strength == piece_at_target.strength: # 同强度
-                        self.set_piece(sr, sc, None)
-                        self.set_piece(er, ec, None) 
-                        return True
-                    else: # 移动方被吃
-                        self.set_piece(sr, sc, None)
-                        return True # 完成捕获，结束本回合
-            # 4b. 目标棋子已翻开
-            else:
-                
-                if piece_at_target.player == piece_moving.player:
-                    return False # 不能吃自己的棋子，也不能移动到有自己已翻开棋子的格子
-
-                # 4b-ii. 目标棋子是对手的棋子 (已翻开)
-                else:
-                    if (piece_moving.strength > piece_at_target.strength and not (piece_moving.strength == 8 and piece_at_target.strength == 1)) or \
-                       (piece_moving.strength == 1 and piece_at_target.strength == 8): # 鼠吃象
-                        self.set_piece(er, ec, piece_moving)
-                        self.set_piece(sr, sc, None)
-                        return True
-                    elif piece_moving.strength < piece_at_target.strength or \
-                         (piece_moving.strength == 8 and piece_at_target.strength == 1): # 象不能吃鼠
-                        self.set_piece(sr, sc, None) # 移动方被吃
-                        return True
-                    else: # 同强度
-                        self.set_piece(sr, sc, None)
-                        self.set_piece(er, ec, None) # 两个棋子同强度
-                        return True
-        return False # 默认返回 False，表示移动未成功
-
-    def get_player_pieces(self, player_id):
-        """Returns a list of positions for a given player's pieces."""
-        return [(r, c) for r in range(ROWS) for c in range(COLS)
-                if self.board[r][c] and self.board[r][c].player == player_id]
-
-    ### NEW CODE FOR MINIMAX ###
-    def get_all_possible_moves(self, player_id):
-        """
-        Generates all legal moves and reveal actions for the given player.
-        Returns a list of tuples: ("reveal", (r, c)) or ("move", (sr, sc), (er, ec))
-        Each action represents a valid way to end a turn.
-        """
-        possible_actions = []
-
-        for r in range(ROWS):
-            for c in range(COLS):
-                piece = self.get_piece(r, c)
-                if piece and piece.player == player_id:
-                    if not piece.revealed:
-                        # 可以翻开自己的未翻开棋子
-                        possible_actions.append(("reveal", (r, c)))
-                    else:
-                        # 如果已翻开，可以尝试移动
-                        for dr, dc in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
-                            nr, nc = r + dr, c + dc
-                            if 0 <= nr < ROWS and 0 <= nc < COLS:
-                                temp_board_for_check = copy.deepcopy(self) # 模拟此动作
-                                # 注意：这里的 try_move 会修改 temp_board_for_check
-                                # 我们只检查 try_move 是否能成功执行并结束回合
-                                if temp_board_for_check.try_move((r, c), (nr, nc)):
-                                    possible_actions.append(("move", (r, c), (nr, nc)))
-        return possible_actions
-    ### END NEW CODE FOR MINIMAX ###
-
-
-class Player:
-    """Base class for players."""
-    def __init__(self, player_id):
-        self.player_id = player_id
-
-    def handle_event(self, event, board):
-        """Handles Pygame events (e.g., mouse clicks for human players)."""
-        raise NotImplementedError
-
-    def take_turn(self, board):
-        """Executes a turn for AI players."""
-        raise NotImplementedError
 
 class HumanPlayer(Player):
     """Controls a player via human input."""
     def __init__(self, player_id):
         super().__init__(player_id)
         self.selected_piece_pos = None
+        self.ai_type = "Human Player"
 
     def handle_event(self, event, board):
         if event.type == pygame.MOUSEBUTTONDOWN:
@@ -227,8 +31,8 @@ class HumanPlayer(Player):
 
                 # 确保选择的棋子是自己的
                 if piece_moving and piece_moving.player == self.player_id:
-                    # 如果点击了相邻位置，尝试移动
                     if board.is_adjacent(self.selected_piece_pos, (row, col)):
+                        # 尝试移动
                         moved = board.try_move(self.selected_piece_pos, (row, col))
                         if moved:
                             self.selected_piece_pos = None
@@ -273,6 +77,7 @@ class RandomPlayer(Player):
     """An AI player that makes random valid moves."""
     def __init__(self, player_id):
         super().__init__(player_id)
+        self.ai_type = "Random AI"
 
     def take_turn(self, board):
         # RandomPlayer 现在使用 Board.get_all_possible_moves
@@ -467,21 +272,64 @@ class MinimaxPlayer(Player):
 
 class Game:
     """Main class to manage the game flow."""
-    def __init__(self):
-        self.board_manager = Board()
-        self.players = {
-            0: HumanPlayer(0), # Red
-            1: HumanPlayer(1)
-            ### MODIFIED CODE ###
-            # 1: RandomPlayer(1), # Original RandomPlayer
-            # 1: HumanPlayer(1) # For two human players
-            # 1: MinimaxPlayer(1, max_depth=3)  # Blue AI with Minimax. Adjust max_depth for difficulty.
-            # 尝试不同的深度，例如 max_depth=2 会更快但可能没那么智能
-        }
+    def __init__(self, agent=None, agent_base=None, test_mode=0):
+        self.board = Board()
+        if not test_mode:
+            self.mode = 0 # not test mode, human vs AI
+            if agent is None:
+                self.players = {
+                    0: HumanPlayer(0),
+                    1: RandomPlayer(1)
+                }
+            elif isinstance(agent, Player):
+                self.players = {
+                    0: HumanPlayer(0),
+                    1: agent
+                }
+            else:
+                self.players = {
+                    0: HumanPlayer(0),
+                    1: agent(1)
+                }
+        else:
+            self.mode = 1 # test mode, AI vs AI
+            if agent_base is None:
+                self.players = {
+                    0: agent if isinstance(agent, Player) else agent(0), # AI Player 1
+                    1: RandomPlayer(1)   # AI Player 2
+                }
+            elif isinstance(agent_base, Player):
+                self.players = {
+                    0: agent if isinstance(agent, Player) else agent(0),  # AI Player 1
+                    1: agent_base   # AI Player 2
+                }
+            else:
+                self.players = {
+                    0: agent if isinstance(agent, Player) else agent(0),  # AI Player 1
+                    1: agent_base(1)   # AI Player 2
+                }
         self.current_player_id = 0
         self.running = True
         self._last_human_move_time = 0 # Track when human player last made a move
-        self.AI_DELAY_SECONDS = 0.5 # Reduced delay for Minimax as it might take longer
+        self.AI_DELAY_SECONDS = 1.5 # The delay for AI moves
+        
+    def _get_player_type_name(self, player):
+        """获取玩家类型的显示名称"""
+        if hasattr(player, 'ai_type'):
+            return player.ai_type
+        
+        # 如果没有ai_type属性，根据类名推断
+        class_name = player.__class__.__name__
+        type_map = {
+            'HumanPlayer': 'Human Player',
+            'RandomPlayer': 'Random',
+            'QLearningAgent': 'QL AI',
+            'DQNAgent': 'DQN AI',
+            'MinimaxPlayer': 'Minimax AI',
+            'AlphaBetaPlayer': 'Alpha-Beta AI',
+            'MCTSPlayer': 'MCTS AI',
+        }
+        return type_map.get(class_name, f'{class_name} AI')
 
     def _draw_board(self):
         """Draws the game board and pieces."""
@@ -491,7 +339,7 @@ class Game:
                 rect = pygame.Rect(j * TILE_SIZE, i * TILE_SIZE, TILE_SIZE, TILE_SIZE)
                 pygame.draw.rect(screen, BLACK, rect, 1) # Cell border
 
-                piece = self.board_manager.get_piece(i, j)
+                piece = self.board.get_piece(i, j)
                 if piece:
                     if piece.revealed:
                         color = RED if piece.player == 0 else BLUE
@@ -503,110 +351,99 @@ class Game:
                     else:
                         pygame.draw.rect(screen, GREY, rect.inflate(-10, -10)) # Unrevealed piece block
 
+        if self.mode == 0: # Human mode
         # Highlight selected piece for human player
-        human_player = self.players[0] # Human player is always player 0 in this setup
-        if isinstance(human_player, HumanPlayer) and human_player.get_selected_pos():
-            i, j = human_player.get_selected_pos()
-            rect = pygame.Rect(j * TILE_SIZE, i * TILE_SIZE, TILE_SIZE, TILE_SIZE)
-            pygame.draw.rect(screen, YELLOW, rect, 3)
+            human_player = self.players[0] # Human player is always player 0 in this setup
+            if isinstance(human_player, HumanPlayer) and human_player.get_selected_pos():
+                i, j = human_player.get_selected_pos()
+                rect = pygame.Rect(j * TILE_SIZE, i * TILE_SIZE, TILE_SIZE, TILE_SIZE)
+                pygame.draw.rect(screen, YELLOW, rect, 3)
 
         # Draw status bar
         status_bar_rect = pygame.Rect(0, SCREEN_HEIGHT - STATUS_BAR_HEIGHT, SCREEN_WIDTH, STATUS_BAR_HEIGHT)
         pygame.draw.rect(screen, BLACK, status_bar_rect) # Background for status bar
-
+        
+        current_player = self.players[self.current_player_id]
         player_name = "Red" if self.current_player_id == 0 else "Blue"
         text_color = RED if self.current_player_id == 0 else BLUE
-        status_text = f"Current Turn: {player_name}"
-
-        # If it's AI's turn and waiting for delay
-        if self.current_player_id == 1 and (time.time() - self._last_human_move_time) < self.AI_DELAY_SECONDS:
-             status_text += " (AI thinking...)" # Or any other message you want to display
+        if current_player.ai_type == "Human Player":
+            status_text = f"Current Turn: {player_name}"
+        else:
+            ai_type = self._get_player_type_name(current_player)
+            status_text = f"Current Turn: {player_name} ({ai_type})"
+            # If it's AI's turn and waiting for delay
+            if (time.time() - self._last_human_move_time) < self.AI_DELAY_SECONDS:
+                status_text += " - Thinking..." # Or any other message you want to display
 
         text_surface = font.render(status_text, True, text_color)
-        screen.blit(text_surface, (10, SCREEN_HEIGHT - STATUS_BAR_HEIGHT + 5))
+        screen.blit(text_surface, (10, SCREEN_HEIGHT - STATUS_BAR_HEIGHT + 10))
+        
+        red_type = self._get_player_type_name(self.players[0])
+        blue_type = self._get_player_type_name(self.players[1])
+        
+        info_text = f"Red: {red_type} vs Blue: {blue_type}"
+        info_surface = small_font.render(info_text, True, GREEN)
+        screen.blit(info_surface, (160, SCREEN_HEIGHT - STATUS_BAR_HEIGHT + 40))
 
     def _check_game_over(self):
         """Checks for win/loss conditions and terminates the game if met."""
-        red_pieces = self.board_manager.get_player_pieces(0)
-        blue_pieces = self.board_manager.get_player_pieces(1)
+        red_pieces = self.board.get_player_pieces(0)
+        blue_pieces = self.board.get_player_pieces(1)
 
         if not red_pieces:
-            self._game_over("Blue wins!")
-            return True
+            red_type = self._get_player_type_name(self.players[0])
+            blue_type = self._get_player_type_name(self.players[1])
+            self._game_over(f"Blue ({blue_type}) wins against Red ({red_type})!")
         elif not blue_pieces:
-            self._game_over("Red wins!")
-            return True
-        ### MODIFIED CODE ###
-        # 更精确的和棋判断：只剩一颗棋子且无法互相捕获或不相邻
+            red_type = self._get_player_type_name(self.players[0])
+            blue_type = self._get_player_type_name(self.players[1])
+            self._game_over(f"Red ({red_type}) wins against Blue ({blue_type})!")
         elif len(red_pieces) == 1 and len(blue_pieces) == 1:
             rr, rc = red_pieces[0]
             br, bc = blue_pieces[0]
-            red_piece = self.board_manager.get_piece(rr, rc)
-            blue_piece = self.board_manager.get_piece(br, bc)
-
-            # 只有当两个棋子都已翻开时，才能判断是否能互相捕获
-            if red_piece.revealed and blue_piece.revealed:
-                can_red_attack = (red_piece.strength > blue_piece.strength) or \
-                                 (red_piece.strength == 1 and blue_piece.strength == 8)
-                can_blue_attack = (blue_piece.strength > red_piece.strength) or \
-                                  (blue_piece.strength == 1 and red_piece.strength == 8)
-                
-                # 如果它们相邻，且双方都无法捕获对方，则为和棋
-                if self.board_manager.is_adjacent((rr, rc), (br, bc)):
-                    if not can_red_attack and not can_blue_attack:
-                        self._game_over("Draw! (Stalemate - last pieces cannot capture each other)")
-                        return True
-                else: # 如果不相邻，也无法捕获，则为和棋
-                    self._game_over("Draw! (Last pieces not adjacent)")
-                    return True
-            # 如果有一方或双方未翻开，游戏继续 (因为信息不完全，未来可能仍有变化)
-        return False # 游戏未结束
+            if not self.board.is_adjacent((rr, rc), (br, bc)):
+                red_type = self._get_player_type_name(self.players[0])
+                blue_type = self._get_player_type_name(self.players[1])
+                self._game_over(f"Draw! Red ({red_type}) vs Blue ({blue_type}) - Last pieces not adjacent")
 
     def _game_over(self, message):
         """Displays game over message and exits."""
         print(message)
         self.running = False # Stop the main game loop
-        # Optional: Keep the window open for a few seconds before closing
-        pygame.time.wait(3000)
 
     def run(self):
         """Main game loop."""
         clock = pygame.time.Clock()
 
         while self.running:
-            for event in pygame.event.get():
-                if event.type == pygame.QUIT:
-                    self.running = False
-                else:
-                    current_player_obj = self.players[self.current_player_id]
-                    if isinstance(current_player_obj, HumanPlayer):
-                        if current_player_obj.handle_event(event, self.board_manager):
-                            # Only switch turn if the human player successfully made a move/reveal
-                            # 立即检查游戏是否结束，如果是则停止循环
-                            if self._check_game_over():
-                                self.running = False 
-                            else:
+            if self.mode == 0:
+                for event in pygame.event.get():
+                    if event.type == pygame.QUIT:
+                        self.running = False
+                    else:
+                        current_player_obj = self.players[self.current_player_id]
+                        if current_player_obj.ai_type == "Human Player":
+                            if current_player_obj.handle_event(event, self.board):
                                 self.current_player_id = 1 - self.current_player_id # Switch turn
                                 self._last_human_move_time = time.time() # Record the time of human's last move
 
-
             # AI Player's turn logic
             current_player_obj = self.players[self.current_player_id]
-            ### MODIFIED CODE ###
-            if isinstance(current_player_obj, (RandomPlayer, MinimaxPlayer)): # 现在也包含 MinimaxPlayer
-                # 检查是否满足 AI 延迟
+            if current_player_obj.ai_type != "Human Player":
+                # Check if enough time has passed since the human's last move
                 if (time.time() - self._last_human_move_time) >= self.AI_DELAY_SECONDS:
-                    # 让 AI 执行回合
-                    if current_player_obj.take_turn(self.board_manager):
-                        # 仅在 AI 成功执行动作后切换回合
-                        if self._check_game_over(): # 立即检查游戏是否结束
-                            self.running = False
-                        else:
-                            self.current_player_id = 1 - self.current_player_id # 切换回合
-                        
+                    if current_player_obj.take_turn(self.board):
+                        self.current_player_id = 1 - self.current_player_id # Switch turn
+                        # No need for time.sleep here as we already handled the delay
+                        # but you could add a very short one if AI move is too fast visually
+                        # time.sleep(0.1)
+            
+                        if self.mode == 1:
+                            self._last_human_move_time = time.time()
+
             self._draw_board()
             pygame.display.flip()
-            # _check_game_over 现在在玩家行动后立即调用，所以主循环中不需要重复调用
+            self._check_game_over()
             clock.tick(30)
 
         pygame.quit()

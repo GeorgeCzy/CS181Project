@@ -7,28 +7,87 @@ import random
 import copy
 from collections import deque, namedtuple
 from typing import Tuple, List, Optional, Dict, Any
-from new_sim import Board, Player
+from base import Board, Player
+from utils import SimpleReward
 
 # 检查GPU是否可用
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print(f"使用设备: {device}")
 
 # 经验回放缓冲区
-Experience = namedtuple('Experience', ['state', 'action', 'reward', 'next_state', 'done'])
+Experience = namedtuple('Experience', ['state', 'action', 'reward', 'next_state', 'result'])
 
-class ReplayBuffer:
-    """经验回放缓冲区"""
-    def __init__(self, capacity: int):
-        self.buffer = deque(maxlen=capacity)
+class PrioritizedReplayBuffer:
+    """优先级经验回放缓冲区"""
+    def __init__(self, capacity: int, alpha: float = 0.6, beta: float = 0.4):
+        self.capacity = capacity
+        self.alpha = alpha      # 优先级指数
+        self.beta = beta        # 重要性采样指数
+        self.beta_increment = 0.001
+        self.buffer = []
+        self.priorities = []
+        self.pos = 0
     
-    def push(self, state, action, reward, next_state, done):
-        self.buffer.append(Experience(state, action, reward, next_state, done))
+    def push(self, state, action, reward, next_state, result):
+        """添加新经验"""
+        max_priority = max(self.priorities) if self.priorities else 1.0
+        
+        if len(self.buffer) < self.capacity:
+            self.buffer.append(Experience(state, action, reward, next_state, result))
+            self.priorities.append(max_priority)
+        else:
+            self.buffer[self.pos] = Experience(state, action, reward, next_state, result)
+            self.priorities[self.pos] = max_priority
+        
+        self.pos = (self.pos + 1) % self.capacity
     
     def sample(self, batch_size: int):
-        return random.sample(self.buffer, batch_size)
+        """采样经验"""
+        if len(self.buffer) == 0:
+            return []
+            
+        # 计算采样概率
+        priorities = np.array(self.priorities)
+        probs = priorities ** self.alpha
+        probs /= probs.sum()
+        
+        # 采样索引
+        indices = np.random.choice(len(self.buffer), batch_size, p=probs)
+        
+        # 计算重要性权重
+        total = len(self.buffer)
+        weights = (total * probs[indices]) ** (-self.beta)
+        weights /= weights.max()
+        weights = torch.FloatTensor(weights).to(device)
+        
+        # 获取经验
+        experiences = [self.buffer[idx] for idx in indices]
+        
+        self.beta = min(1.0, self.beta + self.beta_increment)
+        
+        return experiences, indices, weights
+    
+    def update_priorities(self, indices, td_errors):
+        """更新优先级"""
+        for idx, td_error in zip(indices, td_errors):
+            self.priorities[idx] = abs(td_error) + 1e-6  # 添加小值防止优先级为0
     
     def __len__(self):
         return len(self.buffer)
+
+# class ReplayBuffer:
+#     """经验回放缓冲区"""
+#     def __init__(self, capacity: int):
+#         self.buffer = deque(maxlen=capacity)
+    
+#     def push(self, state, action, reward, next_state, result):
+#         self.buffer.append(Experience(state, action, reward, next_state, result))
+    
+#     def sample(self, batch_size: int):
+#         return random.sample(self.buffer, batch_size)
+    
+#     def __len__(self):
+#         return len(self.buffer)
 
 class DQN(nn.Module):
     """深度Q网络"""
@@ -53,13 +112,15 @@ class DQN(nn.Module):
         x = self.fc4(x)
         return x
 
-class DoushouqiEnv:
+class Environment_DQN:
     """斗兽棋强化学习环境 - 优化版"""
     
     def __init__(self):
         self.board = None
         self.current_player = 0
         self.action_space_size = self._calculate_action_space_size()
+        # self.reward_function = RewardFunction()
+        self.reward_function = SimpleReward()
         self.reset()
     
     def _calculate_action_space_size(self):
@@ -175,66 +236,82 @@ class DoushouqiEnv:
         
         return valid_indices
     
+    def _check_game_over(self): # return -1, 0, 1, 2 : None, 0 win, 1 win, draw
+        """Checks for win/loss conditions and terminates the game if met."""
+        red_pieces = self.board.get_player_pieces(0)
+        blue_pieces = self.board.get_player_pieces(1)
+
+        if not red_pieces:
+            return 1  # Blue wins
+        elif not blue_pieces:
+            return 0  # Red wins
+        elif len(red_pieces) == 1 and len(blue_pieces) == 1:
+            rr, rc = red_pieces[0]
+            br, bc = blue_pieces[0]
+            red_piece = self.board.get_piece(rr, rc)
+            blue_piece = self.board.get_piece(br, bc)
+
+            # 只有当两个棋子都已翻开时，才能判断是否能互相捕获
+            if red_piece.revealed and blue_piece.revealed:
+                can_red_attack = (red_piece.strength > blue_piece.strength) or \
+                                (red_piece.strength == 1 and blue_piece.strength == 8)
+                can_blue_attack = (blue_piece.strength > red_piece.strength) or \
+                                (blue_piece.strength == 1 and red_piece.strength == 8)
+
+                # 如果它们相邻，且双方都无法捕获对方，则为和棋
+                if self.board.is_adjacent((rr, rc), (br, bc)):
+                    if not can_red_attack and not can_blue_attack:
+                        return 2  # Draw
+                else: # 如果不相邻，也无法捕获，则为和棋
+                    if not can_red_attack and not can_blue_attack:
+                        return 2  # Draw
+            # 如果有一方或双方未翻开，游戏继续 (因为信息不完全，未来可能仍有变化)
+        return -1  # Game continues
+    
     def step(self, action_index: int) -> Tuple[torch.Tensor, float, bool, Dict]:
         """执行动作"""
         action = self.index_to_action(action_index)
         if action is None:
-            return self.get_state(), -1.0, False, {"invalid": True}
+            return self.get_state(), -1.0, -1, {"invalid": True}
         
         action_type, pos1, pos2 = action
+        board_before = copy.deepcopy(self.board)
         reward = 0
-        done = False
         info = {}
         
         # 验证动作有效性
         valid_actions = self.get_valid_actions(self.current_player)
         if action_index not in valid_actions:
-            return self.get_state(), -1.0, False, {"invalid": True}
+            return self.get_state(), -1.0, -1, {"invalid": True}
         
         # 执行动作
+        success = False
         if action_type == "reveal":
             r, c = pos1
             piece = self.board.get_piece(r, c)
             if piece and piece.player == self.current_player and not piece.revealed:
                 piece.revealed = True
-                reward = 0.1
+                success = True
             
         elif action_type == "move":
-            start_pos, end_pos = pos1, pos2
-            piece_before = self.board.get_piece(end_pos[0], end_pos[1])
-            
-            if self.board.try_move(start_pos, end_pos):
-                piece_after = self.board.get_piece(end_pos[0], end_pos[1])
-                
-                if piece_before and piece_before.player != self.current_player:
-                    if piece_after and piece_after.player == self.current_player:
-                        reward = piece_before.strength * 0.2
-                    else:
-                        reward = -0.3
-                else:
-                    reward = 0.05
+            success = self.board.try_move(pos1, pos2)
         
-        # 检查游戏结束
-        red_pieces = self.board.get_player_pieces(0)
-        blue_pieces = self.board.get_player_pieces(1)
+        if not success:
+            return self.get_state(), -1.0, -1, {"invalid": True}
+
+        # 检查游戏结果
+        result = self._check_game_over()
         
-        if not red_pieces:
-            done = True
-            reward += 10 if self.current_player == 1 else -10
-        elif not blue_pieces:
-            done = True
-            reward += 10 if self.current_player == 0 else -10
-        elif len(red_pieces) == 1 and len(blue_pieces) == 1:
-            rr, rc = red_pieces[0]
-            br, bc = blue_pieces[0]
-            if not self.board.is_adjacent((rr, rc), (br, bc)):
-                done = True
-                reward += 0
+        # 使用RewardFunction计算奖励
+        reward = self.reward_function.calculate_reward(
+            board_before, self.board, action, self.current_player, result
+        )
         
         # 切换玩家
         self.current_player = 1 - self.current_player
         
-        return self.get_state(), reward, done, info
+        return self.get_state(), reward, result, info
+
 
 class DQNAgent(Player):
     """DQN智能体"""
@@ -259,14 +336,31 @@ class DQNAgent(Player):
         self.optimizer = optim.Adam(self.q_network.parameters(), lr=learning_rate)
         
         # 经验回放缓冲区
-        self.memory = ReplayBuffer(memory_size)
+        self.memory = PrioritizedReplayBuffer(memory_size)
         
         # 更新目标网络
         self.update_target_network()
         
         # 训练统计
         self.losses = []
+        self.episode_count = 0
         
+    def decay_epsilon(self, win_rate: float = None):
+        """智能衰减探索率"""
+        if win_rate is not None:
+            # 基于胜率的自适应衰减
+            if win_rate < 0.3:  # 胜率太低，减缓衰减
+                decay = 0.999
+            elif win_rate > 0.7 and self.episode_count > 20:  # 胜率较高，加快衰减
+                decay = 0.98
+            else:  # 正常衰减
+                decay = self.epsilon_decay
+        else:
+            decay = self.epsilon_decay
+            
+        if self.epsilon > self.epsilon_min:
+            self.epsilon = max(self.epsilon_min, self.epsilon * decay)
+    
     def update_target_network(self):
         """更新目标网络"""
         self.target_network.load_state_dict(self.q_network.state_dict())
@@ -289,16 +383,17 @@ class DQNAgent(Player):
             
             return masked_q_values.argmax().item()
     
-    def store_experience(self, state, action, reward, next_state, done):
+    def store_experience(self, state, action, reward, next_state, result):
         """存储经验"""
-        self.memory.push(state, action, reward, next_state, done)
+        self.memory.push(state, action, reward, next_state, result)
     
     def replay(self):
-        """经验回放学习"""
+        """使用优先级经验回放进行学习"""
         if len(self.memory) < self.batch_size:
             return
         
-        experiences = self.memory.sample(self.batch_size)
+        # 采样经验
+        experiences, indices, weights = self.memory.sample(self.batch_size)
         batch = Experience(*zip(*experiences))
         
         # 转换为张量
@@ -306,7 +401,7 @@ class DQNAgent(Player):
         action_batch = torch.LongTensor(batch.action).to(device)
         reward_batch = torch.FloatTensor(batch.reward).to(device)
         next_state_batch = torch.stack(batch.next_state)
-        done_batch = torch.BoolTensor(batch.done).to(device)
+        result_batch = torch.LongTensor(batch.result).to(device)
         
         # 计算当前Q值
         current_q_values = self.q_network(state_batch).gather(1, action_batch.unsqueeze(1))
@@ -314,26 +409,33 @@ class DQNAgent(Player):
         # 计算目标Q值
         with torch.no_grad():
             next_q_values = self.target_network(next_state_batch).max(1)[0]
-            target_q_values = reward_batch + (0.99 * next_q_values * ~done_batch)
+            target_q_values = reward_batch + (0.99 * next_q_values * (result_batch == -1).float())
         
-        # 计算损失
-        loss = F.mse_loss(current_q_values.squeeze(), target_q_values)
+        # 计算TD误差
+        td_errors = (target_q_values - current_q_values.squeeze()).detach()
+        
+        # 更新优先级
+        self.memory.update_priorities(indices, td_errors.abs().cpu().numpy())
+        
+        # 计算加权损失
+        losses = F.mse_loss(current_q_values.squeeze(), target_q_values, reduction='none')
+        weighted_loss = (losses * weights).mean()
         
         # 反向传播
         self.optimizer.zero_grad()
-        loss.backward()
+        weighted_loss.backward()
+        
+        # 梯度裁剪
+        torch.nn.utils.clip_grad_norm_(self.q_network.parameters(), 1.0)
+        
         self.optimizer.step()
         
         # 记录损失
-        self.losses.append(loss.item())
+        self.losses.append(weighted_loss.item())
         
-        # 衰减epsilon
-        if self.epsilon > self.epsilon_min:
-            self.epsilon *= self.epsilon_decay
-    
     def take_turn(self, board) -> bool:
         """游戏集成接口"""
-        env = DoushouqiEnv()
+        env = Environment_DQN()
         env.board = copy.deepcopy(board)
         env.current_player = self.player_id
         
@@ -390,6 +492,7 @@ class DQNAgent(Player):
             print(f"模型已从 {filepath} 加载")
         except FileNotFoundError:
             print(f"模型文件 {filepath} 不存在")
+            raise FileNotFoundError(f"模型文件 {filepath} 不存在")
 
 class DQNTrainer:
     """DQN训练器"""
@@ -397,13 +500,19 @@ class DQNTrainer:
     def __init__(self, agent: DQNAgent, opponent_agent: Player):
         self.agent = agent
         self.opponent_agent = opponent_agent
-        self.env = DoushouqiEnv()
+        self.env = Environment_DQN()
+        self.wins = 0
+        self.losses = 0
+        self.win_history = []  # 添加胜率追踪
+        self.window_size = 100  # 胜率计算窗口大小
         
-    def train_episode(self) -> Tuple[float, int]:
-        """训练一个回合"""
+    def train_episode(self, opponent_agent = None) -> Tuple[float, int]:
+        """训练一局"""
         state = self.env.reset()
         total_reward = 0
         steps = 0
+        if opponent_agent is not None:
+            self.opponent_agent = opponent_agent
         
         while True:
             if self.env.current_player == self.agent.player_id:
@@ -414,10 +523,10 @@ class DQNTrainer:
                     break
                 
                 action = self.agent.choose_action(state, valid_actions)
-                next_state, reward, done, info = self.env.step(action)
+                next_state, reward, result, info = self.env.step(action)
                 
                 # 存储经验
-                self.agent.store_experience(state, action, reward, next_state, done)
+                self.agent.store_experience(state, action, reward, next_state, result)
                 
                 # 学习
                 self.agent.replay()
@@ -426,17 +535,21 @@ class DQNTrainer:
                 state = next_state
                 steps += 1
                 
-                if done:
+                if result != -1:
                     break
             else:
                 # 对手回合
                 self.opponent_agent.take_turn(self.env.board)
                 state = self.env.get_state()
                 self.env.current_player = 1 - self.env.current_player
+
+            if steps >= 1000:
+                result = 2
+                break
         
-        return total_reward, steps
+        return total_reward, steps, result
     
-    def train(self, episodes: int = 10000, target_update_freq: int = 100, save_interval: int = 1000):
+    def train(self, opponent_agent = None, episodes: int = 10000, target_update_freq: int = 100, save_interval: int = 1000):
         """训练"""
         print(f"开始DQN训练 {episodes} 回合，使用设备: {device}")
         
@@ -445,19 +558,43 @@ class DQNTrainer:
         save_path = r"model_data/"
         
         for episode in range(episodes):
-            total_reward, steps = self.train_episode()
+            total_reward, steps, result = self.train_episode(opponent_agent)
             rewards_history.append(total_reward)
+
+            # 记录胜负
+            if result == self.agent.player_id:
+                self.wins += 1
+                self.win_history.append(1)
+            elif result == 1 - self.agent.player_id:
+                self.losses += 1
+                self.win_history.append(0)
+            else:
+                self.win_history.append(0.5)  # 平局
+                
+            # 保持历史记录在窗口大小范围内
+            if len(self.win_history) > self.window_size:
+                self.win_history.pop(0)
             
+            # 计算当前胜率
+            current_win_rate = sum(self.win_history) / len(self.win_history)
+            
+            # 在每个回合结束时更新epsilon
+            self.agent.decay_epsilon(current_win_rate)
+
             # 更新目标网络
             if episode % target_update_freq == 0:
                 self.agent.update_target_network()
             
             # 打印进度
-            if episode % 100 == 0:
+            if episode % 10 == 0:
                 avg_reward = np.mean(rewards_history[-100:]) if rewards_history else 0
                 avg_loss = np.mean(self.agent.losses[-100:]) if self.agent.losses else 0
                 print(f"回合 {episode}: 平均奖励 = {avg_reward:.2f}, "
-                      f"平均损失 = {avg_loss:.4f}, epsilon = {self.agent.epsilon:.3f}")
+                      f"平均损失 = {avg_loss:.4f}, epsilon = {self.agent.epsilon:.3f}, "
+                      f"步数 = {steps}, 胜 = {self.wins}, 负 = {self.losses}, "
+                      f"胜率 = {current_win_rate:.2f}")
+                self.wins = 0
+                self.losses = 0
             
             # 保存模型
             if episode % save_interval == 0:
@@ -478,7 +615,7 @@ if __name__ == "__main__":
         learning_rate=1e-4, 
         epsilon=0.9,
         epsilon_decay=0.995,
-        batch_size=64
+        batch_size=128
     )
     random_opponent = RandomPlayer(player_id=0)
     
