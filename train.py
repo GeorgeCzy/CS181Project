@@ -1,5 +1,5 @@
 from QlearningAgent import QLearningAgent, QLearningTrainer
-from ApproxiamateQAgent import ApproximateQAgent, ApproximateQTrainer
+from ApproximateQAgent import ApproximateQAgent, ApproximateQTrainer
 from DQN import DQNAgent, DQNTrainer
 from MCTS import MCTSAgent
 # from new_sim import RandomPlayer, Game
@@ -106,21 +106,21 @@ def test_rl_agent():
     rl_agent = QLearningAgent(player_id=1, epsilon=0.0)  # 测试时不探索
     rl_agent.load_q_table("model_data/final_q_table.pkl")
     
-    game = AG.Game(rl_agent)
+    game = AG.Game(rl_agent, display=False)
     game.run()
     
 def test_approximate_agent():
     approx_agent = ApproximateQAgent(player_id=1, epsilon=0.0)  # 测试时不探索
     approx_agent.load_model("model_data/final_aq_model.pth")
     
-    game = AG.Game(approx_agent)
+    game = AG.Game(approx_agent, display=False)
     game.run()
 
 def test_dqn_agent():
     dqn_agent = DQNAgent(player_id=1, epsilon=0.0)  # 测试时不探索
     dqn_agent.load_model("final_dqn_model.pth")
     
-    game = AG.Game(dqn_agent)
+    game = AG.Game(dqn_agent, display=False)
     game.run()
     
 def evaluate_trained_agents():

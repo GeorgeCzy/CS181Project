@@ -4,7 +4,7 @@ import sys
 import time
 import copy # 导入 copy 模块用于深拷贝
 from MCTS import MCTSAgent
-from base import Player, Board, Piece, screen, font, small_font, ROWS, COLS, TILE_SIZE, SCREEN_WIDTH, SCREEN_HEIGHT, STATUS_BAR_HEIGHT, WHITE, BLACK, RED, BLUE, GREY, YELLOW, GREEN
+from base import Player, Board, Piece, ROWS, COLS, TILE_SIZE, SCREEN_WIDTH, SCREEN_HEIGHT, STATUS_BAR_HEIGHT, WHITE, BLACK, RED, BLUE, GREY, YELLOW, GREEN
 
 
 class HumanPlayer(Player):
@@ -273,6 +273,12 @@ class MinimaxPlayer(Player):
 class Game:
     """Main class to manage the game flow."""
     def __init__(self, agent=None, agent_base=None, test_mode=0):
+        pygame.init()
+        pygame.font.init() # Ensure font module is initialized
+        self.screen = pygame.display.set_mode((SCREEN_WIDTH, SCREEN_HEIGHT))
+        pygame.display.set_caption("简化斗兽棋 - AI 对抗")
+        self.font = pygame.font.SysFont(None, 36)
+        self.small_font = pygame.font.SysFont(None, 24)
         self.board = Board()
         if not test_mode:
             self.mode = 0 # not test mode, human vs AI
@@ -333,23 +339,23 @@ class Game:
 
     def _draw_board(self):
         """Draws the game board and pieces."""
-        screen.fill(WHITE)
+        self.screen.fill(WHITE)
         for i in range(ROWS):
             for j in range(COLS):
                 rect = pygame.Rect(j * TILE_SIZE, i * TILE_SIZE, TILE_SIZE, TILE_SIZE)
-                pygame.draw.rect(screen, BLACK, rect, 1) # Cell border
+                pygame.draw.rect(self.screen, BLACK, rect, 1) # Cell border
 
                 piece = self.board.get_piece(i, j)
                 if piece:
                     if piece.revealed:
                         color = RED if piece.player == 0 else BLUE
-                        pygame.draw.circle(screen, color, rect.center, TILE_SIZE // 3)
+                        pygame.draw.circle(self.screen, color, rect.center, TILE_SIZE // 3)
                         text_color = WHITE # Always white text on colored circle for better contrast
-                        text = font.render(str(piece.strength), True, text_color)
+                        text = self.font.render(str(piece.strength), True, text_color)
                         text_rect = text.get_rect(center=rect.center)
-                        screen.blit(text, text_rect)
+                        self.screen.blit(text, text_rect)
                     else:
-                        pygame.draw.rect(screen, GREY, rect.inflate(-10, -10)) # Unrevealed piece block
+                        pygame.draw.rect(self.screen, GREY, rect.inflate(-10, -10)) # Unrevealed piece block
 
         if self.mode == 0: # Human mode
         # Highlight selected piece for human player
@@ -357,11 +363,11 @@ class Game:
             if isinstance(human_player, HumanPlayer) and human_player.get_selected_pos():
                 i, j = human_player.get_selected_pos()
                 rect = pygame.Rect(j * TILE_SIZE, i * TILE_SIZE, TILE_SIZE, TILE_SIZE)
-                pygame.draw.rect(screen, YELLOW, rect, 3)
+                pygame.draw.rect(self.screen, YELLOW, rect, 3)
 
         # Draw status bar
         status_bar_rect = pygame.Rect(0, SCREEN_HEIGHT - STATUS_BAR_HEIGHT, SCREEN_WIDTH, STATUS_BAR_HEIGHT)
-        pygame.draw.rect(screen, BLACK, status_bar_rect) # Background for status bar
+        pygame.draw.rect(self.screen, BLACK, status_bar_rect) # Background for status bar
         
         current_player = self.players[self.current_player_id]
         player_name = "Red" if self.current_player_id == 0 else "Blue"
@@ -375,15 +381,15 @@ class Game:
             if (time.time() - self._last_human_move_time) < self.AI_DELAY_SECONDS:
                 status_text += " - Thinking..." # Or any other message you want to display
 
-        text_surface = font.render(status_text, True, text_color)
-        screen.blit(text_surface, (10, SCREEN_HEIGHT - STATUS_BAR_HEIGHT + 10))
+        text_surface = self.font.render(status_text, True, text_color)
+        self.screen.blit(text_surface, (10, SCREEN_HEIGHT - STATUS_BAR_HEIGHT + 10))
         
         red_type = self._get_player_type_name(self.players[0])
         blue_type = self._get_player_type_name(self.players[1])
         
         info_text = f"Red: {red_type} vs Blue: {blue_type}"
-        info_surface = small_font.render(info_text, True, GREEN)
-        screen.blit(info_surface, (160, SCREEN_HEIGHT - STATUS_BAR_HEIGHT + 40))
+        info_surface = self.small_font.render(info_text, True, GREEN)
+        self.screen.blit(info_surface, (160, SCREEN_HEIGHT - STATUS_BAR_HEIGHT + 40))
 
     def _check_game_over(self):
         """Checks for win/loss conditions and terminates the game if met."""

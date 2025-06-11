@@ -4,7 +4,7 @@ import sys
 import time
 import copy # 导入 copy 模块用于深拷贝
 from MCTS import MCTSAgent
-from base import Player, Board, Piece, screen, font, ROWS, COLS, TILE_SIZE, SCREEN_WIDTH, SCREEN_HEIGHT, STATUS_BAR_HEIGHT, WHITE, BLACK, RED, BLUE, GREY, YELLOW, LIGHT_GREY, DARK_GREY
+from base import Player, Board, Piece, ROWS, COLS, TILE_SIZE, SCREEN_WIDTH, SCREEN_HEIGHT, STATUS_BAR_HEIGHT, WHITE, BLACK, RED, BLUE, GREY, YELLOW, LIGHT_GREY, DARK_GREY, GREEN
 
 
 class HumanPlayer(Player):
@@ -99,9 +99,10 @@ class RandomPlayer(Player):
         return False # No valid moves found
 class GreedyPlayer(Player):
     """An AI player that uses heuristic evaluation to make greedy moves."""
-    def __init__(self, player_id):
+    def __init__(self, player_id, print_messages=True):
         super().__init__(player_id)
         self.opponent_id = 1 - player_id
+        self.print_messages = print_messages
 
     def _evaluate_board(self, board):
         """
@@ -243,7 +244,8 @@ class GreedyPlayer(Player):
                 best_action = action
         
         end_time = time.time()
-        print(f"Greedy found best action: {best_action} with score improvement {best_score:.2f} in {end_time - start_time:.3f} seconds")
+        if self.print_messages:
+            print(f"Greedy found best action: {best_action} with score improvement {best_score:.2f} in {end_time - start_time:.3f} seconds")
         
         # Execute the best action
         if best_action:
@@ -262,10 +264,11 @@ class GreedyPlayer(Player):
         
         return False
 class MinimaxPlayer(Player):
-    def __init__(self, player_id, max_depth=3): # Added max_depth for search
+    def __init__(self, player_id, max_depth=3, print_messages=True): # Added max_depth for search
         super().__init__(player_id)
         self.max_depth = max_depth
         self.opponent_id = 1 - player_id
+        self.print_messages = print_messages
 
     def _evaluate(self, board):
         """
@@ -419,7 +422,8 @@ class MinimaxPlayer(Player):
         value, best_action = self._minimax(board, self.max_depth, self.player_id)
         
         end_time = time.time()
-        print(f"Minimax found best action: {best_action} with value {value} in {end_time - start_time:.2f} seconds")
+        if self.print_messages:
+            print(f"Minimax found best action: {best_action} with value {value} in {end_time - start_time:.2f} seconds")
 
         if best_action:
             action_type = best_action[0]
@@ -442,7 +446,16 @@ MAX_STEPS = 1000  # 最大允许步数
 
 class Game:
 
-    def __init__(self, agent=None, base_agent=None):
+    def __init__(self, agent=None, base_agent=None, display=True, delay=0.0):
+        self.display = display
+        if self.display:
+            pygame.init()
+            pygame.font.init() # Ensure font module is initialized
+            self.screen = pygame.display.set_mode((SCREEN_WIDTH, SCREEN_HEIGHT))
+            pygame.display.set_caption("简化斗兽棋 - AI 对抗")
+            self.font = pygame.font.SysFont(None, 36)
+            self.small_font = pygame.font.SysFont(None, 24)
+        
         self.board = Board()
         if agent is None:
             self.players = {
@@ -463,52 +476,53 @@ class Game:
             }
         self.current_player_id = 0
         self.running = True
-        self.AI_DELAY_SECONDS = 0.0 # AI行动之间的延迟，以便观察
+        self.AI_DELAY_SECONDS = delay # AI行动之间的延迟，以便观察
+        
 
     def _draw_board(self):
         """Draws the game board and pieces."""
-        screen.fill(WHITE)
+        self.screen.fill(WHITE)
         for i in range(ROWS):
             for j in range(COLS):
                 rect = pygame.Rect(j * TILE_SIZE, i * TILE_SIZE, TILE_SIZE, TILE_SIZE)
                 # 交替颜色
                 if (i + j) % 2 == 0:
-                    pygame.draw.rect(screen, GREEN, rect) # 明色格子
+                    pygame.draw.rect(self.screen, GREEN, rect) # 明色格子
                 else:
-                    pygame.draw.rect(screen, YELLOW, rect) # 暗色格子
-                pygame.draw.rect(screen, BLACK, rect, 1) # Cell border
+                    pygame.draw.rect(self.screen, YELLOW, rect) # 暗色格子
+                pygame.draw.rect(self.screen, BLACK, rect, 1) # Cell border
 
                 piece = self.board.get_piece(i, j)
                 if piece:
                     if piece.revealed:
                         color = RED if piece.player == 0 else BLUE
-                        pygame.draw.circle(screen, color, rect.center, TILE_SIZE // 3)
+                        pygame.draw.circle(self.screen, color, rect.center, TILE_SIZE // 3)
                         text_color = WHITE # Always white text on colored circle for better contrast
-                        text = font.render(str(piece.strength), True, text_color)
+                        text = self.font.render(str(piece.strength), True, text_color)
                         text_rect = text.get_rect(center=rect.center)
-                        screen.blit(text, text_rect)
+                        self.screen.blit(text, text_rect)
                     else:
                         # 在棋盘上绘制未揭示的棋子
-                        pygame.draw.circle(screen, LIGHT_GREY, rect.center, TILE_SIZE // 3) # 使用 rect.center 代替 (x, y)
-                        # pygame.draw.rect(screen, GREY, rect.inflate(-10, -10)) # Unrevealed piece block
+                        pygame.draw.circle(self.screen, LIGHT_GREY, rect.center, TILE_SIZE // 3) # 使用 rect.center 代替 (x, y)
+                        # pygame.draw.rect(self.screen, GREY, rect.inflate(-10, -10)) # Unrevealed piece block
 
         # Highlight selected piece for human player (不再需要，但保留以防将来修改为人类玩家)
         # human_player = self.players[0] 
         # if isinstance(human_player, HumanPlayer) and human_player.get_selected_pos():
         #     i, j = human_player.get_selected_pos()
         #     rect = pygame.Rect(j * TILE_SIZE, i * TILE_SIZE, TILE_SIZE, TILE_SIZE)
-        #     pygame.draw.rect(screen, YELLOW, rect, 3)
+        #     pygame.draw.rect(self.screen, YELLOW, rect, 3)
 
         # Draw status bar
         status_bar_rect = pygame.Rect(0, SCREEN_HEIGHT - STATUS_BAR_HEIGHT, SCREEN_WIDTH, STATUS_BAR_HEIGHT)
-        pygame.draw.rect(screen, BLACK, status_bar_rect) # Background for status bar
+        pygame.draw.rect(self.screen, BLACK, status_bar_rect) # Background for status bar
 
         player_name = "Red AI" if self.current_player_id == 0 else "Blue AI"
         text_color = RED if self.current_player_id == 0 else BLUE
         status_text = f"Current Turn: {player_name} (AI thinking...)"
 
-        text_surface = font.render(status_text, True, text_color)
-        screen.blit(text_surface, (10, SCREEN_HEIGHT - STATUS_BAR_HEIGHT + 5))
+        text_surface = self.font.render(status_text, True, text_color)
+        self.screen.blit(text_surface, (10, SCREEN_HEIGHT - STATUS_BAR_HEIGHT + 5))
 
     def _check_game_over(self):
         """Checks for win/loss conditions and terminates the game if met."""
@@ -552,24 +566,26 @@ class Game:
         print(message)
         self.running = False # Stop the main game loop
         # Optional: Keep the window open for a few seconds before closing
-        pygame.time.wait(3000)
 
     def run(self):
         """Main game loop."""
-        clock = pygame.time.Clock()
+        if self.display:
+            clock = pygame.time.Clock()
         
         step_count = 0
         while self.running:
-            for event in pygame.event.get():
-                if event.type == pygame.QUIT:
-                    self.running = False
-                # 移除了人类玩家事件处理逻辑
+            if self.display:
+                for event in pygame.event.get():
+                    if event.type == pygame.QUIT:
+                        self.running = False
+                    # 移除了人类玩家事件处理逻辑
 
             current_player_obj = self.players[self.current_player_id]
             
             # AI 玩家的回合逻辑
             # AI 不依赖事件，直接在循环中执行
-            time.sleep(self.AI_DELAY_SECONDS) # 增加延迟，方便观察
+            if self.display:
+                time.sleep(self.AI_DELAY_SECONDS) # 增加延迟，方便观察
 
             if current_player_obj.take_turn(self.board):
                 # 只在AI成功执行动作后更新计数器
@@ -594,13 +610,15 @@ class Game:
                 self._game_over("Draw! (No valid moves left for current player or stuck state)")
                 self.running = False # 结束游戏
 
-            self._draw_board()
-            pygame.display.flip()
-            # pygame.time.wait(5000) # 暂停5秒
-            clock.tick(30) # 控制帧率
+            if self.display:
+                self._draw_board()
+                pygame.display.flip()
+                # pygame.time.wait(5000) # 暂停5秒
+                clock.tick(30) # 控制帧率
 
-        pygame.quit()
-        sys.exit()
+        if self.display:
+            pygame.quit()
+            sys.exit()
 
 # --- Run the Game ---
 if __name__ == "__main__":
