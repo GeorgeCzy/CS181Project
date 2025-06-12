@@ -10,8 +10,9 @@ import os
 from datetime import datetime
 from collections import deque, namedtuple
 from typing import Tuple, List, Optional, Dict, Any
-from base import Board, Player, BaseTrainer
+from base import Board, Player, BaseTrainer, compare_strength, ROWS, COLS
 from utils import (
+    RewardFunction,
     SimpleReward,
     save_model_data,
     load_model_data,
@@ -291,7 +292,8 @@ class DQNAgent(Player):
         self.memory = PrioritizedReplayBuffer(memory_size, alpha=0.4, beta=0.4)
 
         # 使用激进的奖励函数
-        self.reward_function = AggressiveReward()
+        # self.reward_function = AggressiveReward()
+        self.reward_function = SimpleReward()
 
         # 更新目标网络
         self.update_target_network()
@@ -377,108 +379,132 @@ class DQNAgent(Player):
         
         self.q_network.train()
 
+    def _find_closest_enemy(self, board: Board, pos: Tuple[int, int]) -> Tuple[Optional[Tuple[int, int]], Optional[int], Optional[int]]:
+        """
+        找到距离指定位置最近的敌方棋子
+        返回: (敌方位置, 距离, 敌方棋子) 或 (None, None, None)
+        """
+        r, c = pos
+        piece = board.get_piece(r, c)
+        if not piece or not piece.revealed:
+            return None, None, None
+
+        min_distance = float("inf")
+        closest_enemy_pos = None
+        closest_enemy = None
+
+        # 遍历棋盘寻找已翻开的敌方棋子
+        for nr in range(ROWS):
+            for nc in range(COLS):
+                enemy = board.get_piece(nr, nc)
+                if enemy and enemy.revealed and enemy.player != self.player_id:
+                    dist = abs(nr - r) + abs(nc - c)  # 曼哈顿距离
+                    if dist < min_distance:
+                        min_distance = dist
+                        closest_enemy_pos = (nr, nc)
+                        closest_enemy = enemy
+
+        return closest_enemy_pos, min_distance if closest_enemy_pos else None, closest_enemy
+
     def _evaluate_board_like_greedy(self, board: Board) -> float:
-        """参照GreedyPlayer的评估函数评估棋盘"""
+        """重新设计的Greedy评估函数 - 基于距离的威胁与机会"""
         score = 0
+        piece_values = {8: 100, 7: 90, 6: 80, 5: 70, 4: 60, 3: 50, 2: 40, 1: 60}
+        
+        # 基础得分 - 棋子价值
+        for r in range(ROWS):
+            for c in range(COLS):
+                piece = board.get_piece(r, c)
+                if piece and piece.revealed:
+                    if piece.player == self.player_id:
+                        score += piece_values[piece.strength] 
+                    else:
+                        score -= piece_values[piece.strength] * 0.8
 
-        # Base piece values (和GreedyPlayer保持一致)
-        piece_values = {8: 100, 7: 90, 6: 80, 5: 70, 4: 60, 3: 50, 2: 40, 1: 10}
+        # 距离评估 - 对每个己方棋子评估与最近敌人的关系
+        for r in range(ROWS):
+            for c in range(COLS):
+                piece = board.get_piece(r, c)
+                if not piece or not piece.revealed or piece.player != self.player_id:
+                    continue
+                    
+                # 找到最近的敌人
+                enemy_pos, distance, enemy = self._find_closest_enemy(board, (r, c))
+                if not enemy_pos or not distance or not enemy:
+                    continue
+                    
+                # 计算强度比较结果
+                compare_result = compare_strength(piece.strength, enemy.strength)
+                
+                if compare_result == 1:  # 己方棋子能吃敌人
+                    # 距离越近越好：用常数除以距离
+                    opportunity_score = 50.0 / (distance + 1)
+                    # 敌人价值越高，机会越大
+                    opportunity_score *= piece_values[enemy.strength] / 50.0
+                    score += opportunity_score
+                
+                elif compare_result == -1:  # 己方棋子会被敌人吃
+                    # 距离越远越好：用负的常数除以距离
+                    threat_score = -40.0 / (distance + 1)
+                    # 己方棋子价值越高，威胁越大
+                    threat_score *= piece_values[piece.strength] / 50.0
+                    score += threat_score
 
-        # Get pieces for both players
-        self_pieces = board.get_player_pieces(self.player_id)
-        opponent_pieces = board.get_player_pieces(1 - self.player_id)
-
-        # Check for game-ending states
-        if not opponent_pieces:
-            return float("inf")  # Win
-        if not self_pieces:
-            return float("-inf")  # Loss
-
-        # 1. Base Score - piece values
-        for r, c in self_pieces:
+        # 中心控制评估
+        center_positions = [(3, 3), (3, 4), (2, 3), (2, 4), (4, 3), (4, 4)]
+        center_bonus = 8
+        for r, c in center_positions:
             piece = board.get_piece(r, c)
-            if piece and piece.revealed:
-                score += piece_values[piece.strength]
-            else:
-                score += 30  # Unknown piece average value
+            if piece and piece.revealed and piece.player == self.player_id:
+                score += center_bonus
 
-        λ_1 = 0.8
-        for r, c in opponent_pieces:
-            piece = board.get_piece(r, c)
-            if piece and piece.revealed:
-                score -= λ_1 * piece_values[piece.strength]
-            else:
-                score -= λ_1 * 30  # Unknown piece average value
-
-        # 2. Positional Rewards - Advancing (和GreedyPlayer保持一致)
-        λ_3 = 15  # Advancing bonus weight
-        for r, c in self_pieces:
-            piece = board.get_piece(r, c)
-            if piece and piece.revealed:
-                score += λ_3 * (
-                    6 - r
-                )  # Higher score for pieces closer to opponent's side
-
-        # 3. Mobility - count available moves
-        λ_2 = 2  # Mobility weight
+        # 行动力评估
         possible_actions = board.get_all_possible_moves(self.player_id)
-        score += len(possible_actions) * λ_2
-
-        # 4. Safety Penalty - threatened pieces (和GreedyPlayer保持一致)
-        safety_weight = 10
-        for sr, sc in self_pieces:
-            self_piece = board.get_piece(sr, sc)
-            if self_piece and self_piece.revealed:
-                # Check adjacent enemy pieces that can capture this piece
-                for dr, dc in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
-                    er, ec = sr + dr, sc + dc
-                    if 0 <= er < 7 and 0 <= ec < 8:
-                        enemy_piece = board.get_piece(er, ec)
-                        if (
-                            enemy_piece
-                            and enemy_piece.revealed
-                            and enemy_piece.player != self.player_id
-                        ):
-                            if enemy_piece.compare_strength(self_piece) == 1:
-                                score -= (
-                                    safety_weight
-                                    * piece_values[self_piece.strength]
-                                    / 100
-                                )
+        score += len(possible_actions) * 2
 
         return score
 
     def _evaluate_action_like_greedy(self, board: Board, action: Tuple) -> float:
-        """参照GreedyPlayer的评估函数评估动作"""
-        # Get current board score
+        """评估动作价值 - 计算执行动作前后的得分差"""
+        # 获取当前棋盘得分
         current_score = self._evaluate_board_like_greedy(board)
 
-        # Simulate the action on a copy of the board
+        # 模拟动作在棋盘副本上执行
         temp_board = copy.deepcopy(board)
-
         action_type = action[0]
-        action_successful = False
 
+        # 翻开动作有固定奖励
         if action_type == "reveal":
-            r, c = action[1]
-            piece = temp_board.get_piece(r, c)
-            if piece and piece.player == self.player_id and not piece.revealed:
-                piece.revealed = True
-                action_successful = True
+            return current_score + 20  # 鼓励探索
+            
+        # 移动动作
         elif action_type == "move":
             start_pos, end_pos = action[1], action[2]
-            action_successful = temp_board.try_move(start_pos, end_pos)
+            
+            # 尝试执行移动
+            if not temp_board.try_move(start_pos, end_pos):
+                return float("-inf")  # 无效动作
+                
+            # 获取执行后的棋盘得分
+            new_score = self._evaluate_board_like_greedy(temp_board)
+            
+            # 额外奖励直接吃子的行为
+            moving_piece = board.get_piece(start_pos[0], start_pos[1])
+            target_piece = board.get_piece(end_pos[0], end_pos[1])
+            
+            if moving_piece and target_piece and target_piece.revealed:
+                if target_piece.player != self.player_id:
+                    # 吃掉敌方棋子的移动
+                    piece_values = {8: 100, 7: 90, 6: 80, 5: 70, 4: 60, 3: 50, 2: 40, 1: 60}
+                    new_score += piece_values[target_piece.strength] * 0.3  # 额外激励吃子
 
-        if not action_successful:
-            return float("-inf")  # Invalid action
+            return new_score - current_score
 
-        # Get new board score after action
-        new_score = self._evaluate_board_like_greedy(temp_board)
-
-        return new_score - current_score
+        # 处理其他类型动作
+        return 0
 
     def _guided_exploration(self, board: Board, valid_actions: List[Tuple]) -> Tuple:
-        """优化的引导性探索：使用类似GreedyPlayer的评估来指导探索 - 修复属性引用"""
+        """优化的引导性探索：使用类似Greedy的评估来指导探索 - 修复属性引用"""
         if not valid_actions:
             return ("reveal", (0, 0), None)
 
@@ -1229,7 +1255,7 @@ class DQNAgent(Player):
         if not valid_actions:
             return False
 
-        # 在测试模式下，强制epsilon=0（纯贪心策略）
+        # 在测试模式下，强制epsilon=0
         original_epsilon = self.epsilon
         if not self.training_mode:
             self.epsilon = 0.0
@@ -1246,8 +1272,8 @@ class DQNAgent(Player):
         if action_type == "reveal":
             r, c = pos1
             piece = board.get_piece(r, c)
-            if piece and piece.player == self.player_id and not piece.revealed:
-                piece.revealed = True
+            if piece and not piece.revealed:
+                piece.reveal()
                 return True
 
         elif action_type == "move":
@@ -1367,537 +1393,3 @@ class DQNTrainer(BaseTrainer):
     def save_model(self, filename: str):
         """保存模型"""
         self.agent.save_model(filename)
-
-
-# def train_or_load_model(force_retrain=False, episodes=2000, lr_strategy="hybrid", print_interval=50):
-#     """训练或加载改进的DQN模型 - 使用独立数据管理"""
-#     from AgentFight import RandomPlayer
-#     from training_data_manager import TrainingDataManager
-#     import os
-
-#     model_name = "final_D3QNAgent"
-
-#     # 创建改进的智能体
-#     dqn_agent = DQNAgent(
-#         player_id=0,
-#         learning_rate=5e-4,
-#         epsilon=0.9,
-#         epsilon_min=0.05,
-#         epsilon_decay=0.995,
-#         batch_size=128,
-#         memory_size=50000,
-#         use_dueling=True,
-#         use_double=True
-#     )
-#     random_opponent = RandomPlayer(player_id=1)
-
-#     # 设置学习率策略
-#     if lr_strategy == "adaptive":
-#         dqn_agent.enable_adaptive_lr()
-#         print("使用自适应学习率策略")
-#     elif lr_strategy == "fixed":
-#         dqn_agent.disable_adaptive_lr()
-#         print("使用固定衰减学习率策略")
-#     else:  # hybrid
-#         print("使用混合学习率策略")
-
-#     # 检查是否存在已训练的模型
-#     model_path = os.path.join("model_data", f"{model_name}.pkl")
-#     model_exists = os.path.exists(model_path)
-
-#     if model_exists and not force_retrain:
-#         print(f"发现已训练的模型: {model_path}")
-#         if dqn_agent.load_model(model_name):
-#             print("模型加载成功!")
-#             dqn_agent.epsilon = 0.0
-#             dqn_agent.ai_type = "D3QN (Trained)"
-#         else:
-#             print("模型加载失败，将重新训练...")
-#             model_exists = False
-
-#     if not model_exists or force_retrain:
-#         if force_retrain:
-#             print("强制重新训练模型...")
-#         else:
-#             print("未找到已训练模型，开始训练...")
-
-#         # 创建数据管理器
-#         data_manager = TrainingDataManager()
-#         session_name = f"D3QN_{lr_strategy}_{episodes}eps_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-#         data_manager.start_session(dqn_agent, session_name)
-
-#         trainer = DQNTrainer(dqn_agent, random_opponent)
-
-#         # 使用课程式训练，传入打印间隔
-#         combined_history = train_with_curriculum(dqn_agent, random_opponent, episodes, data_manager, print_interval)
-
-#         # 结束数据记录会话
-#         final_stats = {
-#             'training_episodes': episodes,
-#             'lr_strategy': lr_strategy,
-#             'final_epsilon': dqn_agent.epsilon,
-#             'final_learning_rate': dqn_agent.get_learning_rate()
-#         }
-#         data_manager.end_session(dqn_agent, final_stats)
-
-#         # 绘制训练历史
-#         data_manager.plot_training_history()
-
-#         # 保存模型（不包含训练数据）
-#         dqn_agent.save_model(model_name)
-
-#         print(f"训练完成! 最终epsilon: {dqn_agent.epsilon:.3f}")
-#         print(f"最终胜率: {dqn_agent.get_stats()['win_rate']:.3f}")
-
-#         # 设置为测试模式
-#         dqn_agent.epsilon = 0.0
-#         dqn_agent.ai_type = "D3QN (Trained)"
-
-#     return dqn_agent, random_opponent
-
-# def train_with_curriculum(dqn_agent, opponent, episodes=2000, data_manager=None, print_interval=50):
-#     """课程式训练 - 带数据记录版本，改进学习率控制和进度输出
-
-#     Args:
-#         dqn_agent: DQN智能体
-#         opponent: 对手
-#         episodes: 总训练回合数
-#         data_manager: 数据管理器
-#         print_interval: 打印进度的间隔（默认每50回合）
-#     """
-#     trainer = DQNTrainer(dqn_agent, opponent)
-
-#     total_episodes = episodes
-
-#     # 添加计时记录
-#     training_start_time = time.time()
-#     phase_times = {}  # 记录各阶段耗时
-
-#     # 阶段1: 快速探索 (30%)
-#     phase1_episodes = int(total_episodes * 0.3)
-#     print(f"阶段1: 快速探索学习 ({phase1_episodes} episodes) - 每{print_interval}回合输出进度")
-#     print(f"epsilon固定在: {dqn_agent.epsilon:.3f}")
-#     print(f"初始学习率: {dqn_agent.get_learning_rate():.6f}")
-
-#     # 保存原始epsilon衰减设置并禁用
-#     original_epsilon_decay = dqn_agent.epsilon_decay
-#     dqn_agent.epsilon_decay = 1.0  # 禁用epsilon衰减
-
-#     trainer.target_update_freq = 30
-
-#     # 阶段1训练开始计时
-#     phase1_start_time = time.time()
-
-#     # 用于计算批次统计的变量
-#     batch_wins = 0
-#     batch_loses = 0
-#     batch_draws = 0
-#     batch_steps = []
-#     batch_start_episode = 0
-
-#     for episode in range(phase1_episodes):
-#         episode_start_time = time.time()
-#         total_reward, steps, result = trainer.train_episode()
-#         episode_end_time = time.time()
-#         episode_time = episode_end_time - episode_start_time
-
-#         # 记录批次数据
-#         batch_steps.append(steps)
-#         if result == 0:  # 智能体胜利
-#             batch_wins += 1
-#         elif result == 1:  # 对手胜利
-#             batch_loses += 1
-#         else:  # 平局
-#             batch_draws += 1
-
-#         # 定期输出进度
-#         if episode % print_interval == 0 or episode == phase1_episodes - 1:
-#             # 计算这个批次的统计
-#             batch_episodes = episode - batch_start_episode + 1
-#             batch_win_rate = (batch_wins + batch_draws / 2) / batch_episodes
-#             avg_steps = sum(batch_steps) / len(batch_steps) if batch_steps else 0
-
-#             # 计算这批次的耗时
-#             current_time = time.time()
-#             if episode == 0:
-#                 batch_time = current_time - phase1_start_time
-#             else:
-#                 # 计算从上次输出到现在的时间
-#                 episodes_since_start = episode + 1
-#                 total_elapsed = current_time - phase1_start_time
-#                 if episode >= print_interval:
-#                     # 估算这个批次的时间
-#                     avg_time_per_episode = total_elapsed / episodes_since_start
-#                     batch_time = print_interval * avg_time_per_episode
-#                 else:
-#                     batch_time = total_elapsed
-
-#             avg_time_per_episode = batch_time / batch_episodes if batch_episodes > 0 else 0
-
-#             param_info = f", ε = {dqn_agent.epsilon:.3f}, lr = {dqn_agent.get_learning_rate():.6f}"
-#             time_info = f", 用时 = {batch_time:.1f}s, 平均 = {avg_time_per_episode:.2f}s/ep"
-#             print(f"阶段1 - 回合 {episode}: 奖励 = {total_reward:.2f}, 步数 = {steps}, "
-#                   f"胜 = {batch_wins}, 负 = {batch_loses}, 平 = {batch_draws}, "
-#                   f"批次胜率 = {batch_win_rate:.3f}, 平均步长 = {avg_steps:.1f}{param_info}{time_info}")
-
-#             # 记录批次统计到数据管理器
-#             if data_manager:
-#                 data_manager.log_batch_stats(
-#                     batch_wins, batch_loses, batch_draws,
-#                     batch_win_rate, avg_steps
-#                 )
-
-#             # 重置批次统计
-#             batch_wins = 0
-#             batch_loses = 0
-#             batch_draws = 0
-#             batch_steps = []
-#             batch_start_episode = episode + 1
-
-#         # 在阶段1，每100个episode检查一次学习率调整
-#         if episode > 0 and episode % 100 == 0:
-#             # 计算最近100个episode的胜率用于学习率调整
-#             recent_wins = 0
-#             recent_episodes = min(100, episode + 1)
-#             for i in range(max(0, episode - recent_episodes + 1), episode + 1):
-#                 if (data_manager and
-#                     len(data_manager.current_session['training_history']['wins']) > i and
-#                     data_manager.current_session['training_history']['wins'][i] == 1):
-#                     recent_wins += 1
-#             recent_win_rate = recent_wins / recent_episodes
-
-#             dqn_agent.update_learning_rate(recent_win_rate)
-
-#         # 记录每个episode的详细数据
-#         if data_manager:
-#             data_manager.log_episode(
-#                 episode=episode,
-#                 reward=total_reward,
-#                 result=result,
-#                 learning_rate=dqn_agent.get_learning_rate(),
-#                 epsilon=dqn_agent.epsilon,
-#                 loss=dqn_agent.losses[-1] if dqn_agent.losses else None,
-#                 phase='phase1_exploration',
-#                 steps=steps,
-#                 episode_time=episode_time
-#             )
-
-#     phase1_end_time = time.time()
-#     phase_times['phase1'] = phase1_end_time - phase1_start_time
-#     print(f"阶段1完成! 当前epsilon: {dqn_agent.epsilon:.3f}, 学习率: {dqn_agent.get_learning_rate():.6f}")
-#     print(f"阶段1总耗时: {phase_times['phase1']:.1f}秒, 平均: {phase_times['phase1']/phase1_episodes:.2f}秒/回合")
-
-#     # 阶段2: 平衡学习 (50%)
-#     phase2_episodes = int(total_episodes * 0.5)
-#     print(f"\n阶段2: 平衡学习 ({phase2_episodes} episodes)")
-#     print(f"启用缓慢epsilon衰减，当前epsilon: {dqn_agent.epsilon:.3f}")
-#     print(f"当前学习率: {dqn_agent.get_learning_rate():.6f}")
-
-#     # 启用缓慢epsilon衰减
-#     dqn_agent.epsilon_decay = 0.999
-#     trainer.target_update_freq = 50
-
-#     # 阶段2开始计时
-#     phase2_start_time = time.time()
-
-#     # 重置批次统计
-#     batch_wins = 0
-#     batch_loses = 0
-#     batch_draws = 0
-#     batch_steps = []
-#     batch_start_episode = 0
-
-#     for episode in range(phase2_episodes):
-#         episode_start_time = time.time()
-#         total_reward, steps, result = trainer.train_episode()
-#         episode_end_time = time.time()
-#         episode_time = episode_end_time - episode_start_time
-
-#         # 在阶段2调用epsilon衰减
-#         dqn_agent.decay_epsilon()
-
-#         # 记录批次数据
-#         batch_steps.append(steps)
-#         if result == 0:  # 智能体胜利
-#             batch_wins += 1
-#         elif result == 1:  # 对手胜利
-#             batch_loses += 1
-#         else:  # 平局
-#             batch_draws += 1
-
-#         # 定期输出进度
-#         if episode % print_interval == 0 or episode == phase2_episodes - 1:
-#             # 计算这个批次的统计
-#             batch_episodes = episode - batch_start_episode + 1
-#             batch_win_rate = (batch_wins + batch_draws / 2) / batch_episodes
-#             avg_steps = sum(batch_steps) / len(batch_steps) if batch_steps else 0
-
-#             # 计算耗时
-#             current_time = time.time()
-#             phase2_elapsed = current_time - phase2_start_time
-#             if episode == 0:
-#                 batch_time = phase2_elapsed
-#             else:
-#                 avg_time_per_episode = phase2_elapsed / (episode + 1)
-#                 batch_time = batch_episodes * avg_time_per_episode
-
-#             avg_time_per_episode = batch_time / batch_episodes if batch_episodes > 0 else 0
-
-#             param_info = f", ε = {dqn_agent.epsilon:.3f}, lr = {dqn_agent.get_learning_rate():.6f}"
-#             time_info = f", 累计用时 = {phase2_elapsed:.1f}s, 平均 = {avg_time_per_episode:.2f}s/ep"
-#             print(f"阶段2 - 回合 {episode}: 奖励 = {total_reward:.2f}, 步数 = {steps}, "
-#                     f"胜 = {batch_wins}, 负 = {batch_loses}, 平 = {batch_draws}, "
-#                   f"批次胜率 = {batch_win_rate:.3f}, 平均步长 = {avg_steps:.1f}{param_info}{time_info}")
-
-#             # 记录批次统计到数据管理器
-#             if data_manager:
-#                 data_manager.log_batch_stats(
-#                     batch_wins, batch_loses, batch_draws,
-#                     batch_win_rate, avg_steps
-#                 )
-
-#             # 重置批次统计
-#             batch_wins = 0
-#             batch_loses = 0
-#             batch_draws = 0
-#             batch_steps = []
-#             batch_start_episode = episode + 1
-
-#         # 阶段2学习率调整频率降低
-#         if episode > 0 and episode % 150 == 0:
-#             # 计算最近150个episode的胜率用于学习率调整
-#             recent_wins = 0
-#             recent_episodes = min(150, episode + 1)
-#             for i in range(max(0, phase1_episodes + episode - recent_episodes + 1), phase1_episodes + episode + 1):
-#                 if (data_manager and
-#                     len(data_manager.current_session['training_history']['wins']) > i and
-#                     data_manager.current_session['training_history']['wins'][i] == 1):
-#                     recent_wins += 1
-#             recent_win_rate = recent_wins / recent_episodes
-
-#             dqn_agent.update_learning_rate(recent_win_rate)
-
-#         # 记录每个episode的详细数据
-#         if data_manager:
-#             data_manager.log_episode(
-#                 episode=phase1_episodes + episode,
-#                 reward=total_reward,
-#                 result=result,
-#                 learning_rate=dqn_agent.get_learning_rate(),
-#                 epsilon=dqn_agent.epsilon,
-#                 loss=dqn_agent.losses[-1] if dqn_agent.losses else None,
-#                 phase='phase2_balance',
-#                 steps=steps,
-#                 episode_time=episode_time
-#             )
-
-#     phase2_end_time = time.time()
-#     phase_times['phase2'] = phase2_end_time - phase2_start_time
-#     print(f"阶段2完成! 当前epsilon: {dqn_agent.epsilon:.3f}, 学习率: {dqn_agent.get_learning_rate():.6f}")
-#     print(f"阶段2总耗时: {phase_times['phase2']:.1f}秒, 平均: {phase_times['phase2']/phase2_episodes:.2f}秒/回合")
-
-#     # 阶段3: 策略精炼 (20%)
-#     phase3_episodes = total_episodes - phase1_episodes - phase2_episodes
-#     print(f"\n阶段3: 策略精炼 ({phase3_episodes} episodes)")
-#     print(f"恢复正常epsilon衰减，当前epsilon: {dqn_agent.epsilon:.3f}")
-#     print(f"当前学习率: {dqn_agent.get_learning_rate():.6f}")
-
-#     # 恢复正常epsilon衰减
-#     dqn_agent.epsilon_decay = original_epsilon_decay
-#     trainer.target_update_freq = 100
-
-#     # 阶段3开始计时
-#     phase3_start_time = time.time()
-
-#     # 重置批次统计
-#     batch_wins = 0
-#     batch_loses = 0
-#     batch_draws = 0
-#     batch_steps = []
-#     batch_start_episode = 0
-
-#     for episode in range(phase3_episodes):
-#         episode_start_time = time.time()
-#         total_reward, steps, result = trainer.train_episode()
-#         episode_end_time = time.time()
-#         episode_time = episode_end_time - episode_start_time
-
-#         # 在阶段3调用epsilon衰减
-#         dqn_agent.decay_epsilon()
-
-#         # 记录批次数据
-#         batch_steps.append(steps)
-#         if result == 0:  # 智能体胜利
-#             batch_wins += 1
-#         elif result == 1:  # 对手胜利
-#             batch_loses += 1
-#         else:  # 平局
-#             batch_draws += 1
-
-#         # 定期输出进度
-#         if episode % print_interval == 0 or episode == phase3_episodes - 1:
-#             # 计算这个批次的统计
-#             batch_episodes = episode - batch_start_episode + 1
-#             batch_win_rate = (batch_wins + batch_draws / 2) / batch_episodes
-#             avg_steps = sum(batch_steps) / len(batch_steps) if batch_steps else 0
-
-#             # 计算耗时
-#             current_time = time.time()
-#             phase3_elapsed = current_time - phase3_start_time
-#             if episode == 0:
-#                 batch_time = phase3_elapsed
-#             else:
-#                 avg_time_per_episode = phase3_elapsed / (episode + 1)
-#                 batch_time = batch_episodes * avg_time_per_episode
-
-#             avg_time_per_episode = batch_time / batch_episodes if batch_episodes > 0 else 0
-
-#             param_info = f", ε = {dqn_agent.epsilon:.3f}, lr = {dqn_agent.get_learning_rate():.6f}"
-#             time_info = f", 累计用时 = {phase3_elapsed:.1f}s, 平均 = {avg_time_per_episode:.2f}s/ep"
-#             print(f"阶段3 - 回合 {episode}: 奖励 = {total_reward:.2f}, 步数 = {steps}, "
-#                   f"胜 = {batch_wins}, 负 = {batch_loses}, 平 = {batch_draws}, "
-#                   f"批次胜率 = {batch_win_rate:.3f}, 平均步长 = {avg_steps:.1f}{param_info}{time_info}")
-
-#             # 记录批次统计到数据管理器
-#             if data_manager:
-#                 data_manager.log_batch_stats(
-#                     batch_wins, batch_loses, batch_draws,
-#                     batch_win_rate, avg_steps
-#                 )
-
-#             # 重置批次统计
-#             batch_wins = 0
-#             batch_loses = 0
-#             batch_draws = 0
-#             batch_steps = []
-#             batch_start_episode = episode + 1
-
-#         # 阶段3减少学习率调整，更关注稳定性
-#         if episode > 0 and episode % 200 == 0:
-#             # 计算最近200个episode的胜率用于学习率调整
-#             recent_wins = 0
-#             recent_episodes = min(200, episode + 1)
-#             for i in range(max(0, phase1_episodes + phase2_episodes + episode - recent_episodes + 1),
-#                           phase1_episodes + phase2_episodes + episode + 1):
-#                 if (data_manager and
-#                     len(data_manager.current_session['training_history']['wins']) > i and
-#                     data_manager.current_session['training_history']['wins'][i] == 1):
-#                     recent_wins += 1
-#             recent_win_rate = recent_wins / recent_episodes
-
-#             dqn_agent.update_learning_rate(recent_win_rate)
-
-#         # 记录每个episode的详细数据
-#         if data_manager:
-#             data_manager.log_episode(
-#                 episode=phase1_episodes + phase2_episodes + episode,
-#                 reward=total_reward,
-#                 result=result,
-#                 learning_rate=dqn_agent.get_learning_rate(),
-#                 epsilon=dqn_agent.epsilon,
-#                 loss=dqn_agent.losses[-1] if dqn_agent.losses else None,
-#                 phase='phase3_refinement',
-#                 steps=steps,
-#                 episode_time=episode_time
-#             )
-
-#     phase3_end_time = time.time()
-#     phase_times['phase3'] = phase3_end_time - phase3_start_time
-
-#     # 总结训练时间
-#     total_training_time = phase3_end_time - training_start_time
-
-#     print(f"\n课程训练完成!")
-#     print(f"最终epsilon: {dqn_agent.epsilon:.3f}")
-#     print(f"最终学习率: {dqn_agent.get_learning_rate():.6f}")
-#     print(f"最终胜率: {dqn_agent.get_stats()['win_rate']:.3f}")
-
-#     print(f"\n=== 训练耗时统计 ===")
-#     print(f"阶段1 ({phase1_episodes} episodes): {phase_times['phase1']:.1f}秒 (平均 {phase_times['phase1']/phase1_episodes:.2f}秒/回合)")
-#     print(f"阶段2 ({phase2_episodes} episodes): {phase_times['phase2']:.1f}秒 (平均 {phase_times['phase2']/phase2_episodes:.2f}秒/回合)")
-#     print(f"阶段3 ({phase3_episodes} episodes): {phase_times['phase3']:.1f}秒 (平均 {phase_times['phase3']/phase3_episodes:.2f}秒/回合)")
-#     print(f"总训练时间: {total_training_time:.1f}秒 ({total_training_time/60:.1f}分钟)")
-#     print(f"总体平均: {total_training_time/total_episodes:.2f}秒/回合")
-
-#     # 在训练结束后打印详细统计
-#     if data_manager:
-#         summary = data_manager.get_summary_stats()
-#         print(f"\n=== 详细训练统计 ===")
-#         if 'average_steps' in summary:
-#             print(f"平均步数: {summary['average_steps']:.1f} ± {summary['steps_std']:.1f}")
-#             print(f"步数范围: {summary['min_steps']} - {summary['max_steps']}")
-#         if 'average_episode_time' in summary:
-#             print(f"平均每回合时间: {summary['average_episode_time']:.3f} ± {summary['episode_time_std']:.3f} 秒")
-#         print(f"总胜率: {summary['final_win_rate']:.3f}")
-#         print(f"平均奖励: {summary['average_reward']:.3f} ± {summary['reward_std']:.3f}")
-
-#     return data_manager.current_session['training_history'] if data_manager else {}
-
-# # 使用示例
-# if __name__ == "__main__":
-#     import argparse
-#     from base import Game
-
-#     parser = argparse.ArgumentParser(description='DQN Agent 训练和测试')
-#     parser.add_argument('--retrain', action='store_true', help='强制重新训练模型')
-#     parser.add_argument('--episodes', type=int, default=1000, help='训练回合数')
-#     parser.add_argument('--test-games', type=int, default=1, help='测试游戏数量')
-#     parser.add_argument('--no-display', action='store_true', help='不显示游戏界面')
-#     parser.add_argument('--lr-strategy', choices=['adaptive', 'fixed', 'hybrid'],
-#                        default='hybrid', help='学习率调整策略')
-#     parser.add_argument('--test-only', action='store_true', help='仅测试，不训练')
-#     parser.add_argument('--print-interval', type=int, default=50, help='训练进度输出间隔')
-
-#     args = parser.parse_args()
-
-#     # 训练或加载模型
-#     if not args.test_only:
-#         dqn_agent, random_opponent = train_or_load_model(
-#             force_retrain=args.retrain,
-#             episodes=args.episodes,
-#             lr_strategy=args.lr_strategy,
-#             print_interval=args.print_interval
-#         )
-#     else:
-#         # 仅测试模式：直接加载模型
-#         print("仅测试模式，加载已训练模型...")
-#         dqn_agent = DQNAgent(player_id=0)
-#         if not dqn_agent.load_model("final_D3QNAgent"):
-#             print("错误：找不到训练好的模型！")
-#             exit(1)
-#         from AgentFight import RandomPlayer
-#         random_opponent = RandomPlayer(player_id=1)
-
-#     # 设置为测试模式
-#     dqn_agent.set_training_mode(False)
-
-#     # 测试
-#     print(f"\n开始测试 {args.test_games} 场游戏...")
-#     print(f"测试模式 - epsilon: {dqn_agent.epsilon}")
-
-#     wins = 0
-#     draws = 0
-
-#     for i in range(args.test_games):
-#         game = Game(dqn_agent, random_opponent, display=not args.no_display, delay=0.5)
-#         result = game.run()
-
-#         if result == 0:  # DQN agent wins
-#             wins += 1
-#         elif result == 2:  # Draw
-#             draws += 1
-
-#         if args.test_games <= 10:  # 只在测试游戏数较少时显示详细结果
-#             result_text = '胜利' if result == 0 else '失败' if result == 1 else '平局'
-#             print(f"游戏 {i+1}: {result_text}")
-
-#     win_rate = wins / args.test_games
-#     draw_rate = draws / args.test_games
-
-#     print(f"\n测试结果:")
-#     print(f"胜利: {wins}/{args.test_games} ({win_rate:.3f})")
-#     print(f"平局: {draws}/{args.test_games} ({draw_rate:.3f})")
-#     print(f"失败: {args.test_games - wins - draws}/{args.test_games}")
-#     print(f"有效胜率 (胜+0.5*平): {win_rate + 0.5 * draw_rate:.3f}")
-
-# # python DQN.py --retrain --episodes 5000 --lr-strategy hybrid --test-games 200 --no-display --print-interval 100

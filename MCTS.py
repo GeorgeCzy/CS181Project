@@ -3,7 +3,7 @@ import random
 import math
 import copy
 from typing import List, Tuple, Dict, Optional
-from base import Board, Player, BaseTrainer
+from base import Board, Player, BaseTrainer, compare_strength
 from utils import RewardFunction, save_model_data, load_model_data
 
 class MCTSNode:
@@ -72,8 +72,8 @@ class MCTSAgent(Player):
         if action[0] == "reveal":
             r, c = action[1]
             piece = new_state.get_piece(r, c)
-            if piece and piece.player == node.player_id and not piece.revealed:
-                piece.revealed = True
+            if piece and not piece.revealed:
+                piece.reveal()
                 success = True
         else:  # move
             success = new_state.try_move(action[1], action[2])
@@ -124,8 +124,8 @@ class MCTSAgent(Player):
             if action[0] == "reveal":
                 r, c = action[1]
                 piece = state.get_piece(r, c)
-                if piece and piece.player == current_player and not piece.revealed:
-                    piece.revealed = True
+                if piece and not piece.revealed:
+                    piece.reveal()
                     success = True
                     last_move = None
                     repeated_moves = 0
@@ -178,7 +178,7 @@ class MCTSAgent(Player):
                     if target_piece and target_piece.player != current_player:
                         # 评估吃子价值
                         if target_piece.revealed:
-                            if moving_piece.compare_strength(target_piece) == 1:
+                            if compare_strength(moving_piece.strength, target_piece.strength) == 1:
                                 value += 3.0 * self.reward_function.get_piece_value(target_piece.strength)
                     
                     # 考虑威胁和机会
@@ -220,13 +220,9 @@ class MCTSAgent(Player):
             br, bc = blue_pieces[0]
             red_piece = board.get_piece(rr, rc)
             blue_piece = board.get_piece(br, bc)
-            
-            if red_piece.revealed and blue_piece.revealed:
-                can_red_attack = red_piece.compare_strength(blue_piece) == 1
-                can_blue_attack = blue_piece.compare_strength(red_piece) == 1
-                
-                if not can_red_attack and not can_blue_attack:
-                    return 2  # 平局
+               
+            if compare_strength(red_piece.strength, blue_piece.strength) == 0:
+                return 2  # 平局
                     
         return -1  # 游戏继续
 
@@ -276,8 +272,8 @@ class MCTSAgent(Player):
         if action_type == "reveal":
             r, c = pos1
             piece = board.get_piece(r, c)
-            if piece and piece.player == self.player_id and not piece.revealed:
-                piece.revealed = True
+            if piece and not piece.revealed:
+                piece.reveal()
                 return True
         else:  # move
             return board.try_move(pos1, pos2)

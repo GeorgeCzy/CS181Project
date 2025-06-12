@@ -10,7 +10,7 @@ import os
 from datetime import datetime
 from collections import deque, namedtuple
 from typing import Tuple, List, Optional, Dict, Any
-from base import Board, Player
+from base import Board, Player, compare_strength
 from utils import save_model_data, load_model_data, AggressiveReward, PrioritizedReplayBuffer, Experience, device
 from cnn_features import CNNEnhancedFeatureExtractor
 from DQN import DQNAgent, DQNTrainer
@@ -244,7 +244,7 @@ class CNNEnhancedDQNAgent(DQNAgent):
                     if 0 <= nr < 7 and 0 <= nc < 8:
                         neighbor = board.get_piece(nr, nc)
                         if neighbor and neighbor.revealed and neighbor.player != self.player_id:
-                            compare = piece.compare_strength(neighbor)
+                            compare = compare_strength(piece.strength, neighbor.strength)
                             if compare == -1:  # 受威胁
                                 threat_count += 1
                             elif compare == 1:  # 有机会
@@ -350,8 +350,8 @@ class CNNEnhancedDQNAgent(DQNAgent):
         if action_type == "reveal":
             r, c = pos1
             piece = board.get_piece(r, c)
-            if piece and piece.player == self.player_id and not piece.revealed:
-                piece.revealed = True
+            if piece and not piece.revealed:
+                piece.reveal()
                 return True
         elif action_type == "move":
             return board.try_move(pos1, pos2)
