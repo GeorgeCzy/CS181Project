@@ -220,7 +220,8 @@ class GreedyPlayer(Player):
         Chooses the best action based on heuristic evaluation.
         This is a greedy approach - evaluates all possible moves and picks the best one.
         """
-        print(f"Greedy Player {self.player_id} thinking...")
+        if self.print_messages:
+            print(f"Greedy Player {self.player_id} thinking...")
         start_time = time.time()
         
         # Get all possible actions
@@ -415,7 +416,8 @@ class MinimaxPlayer(Player):
             return min_eval, best_move
 
     def take_turn(self, board):
-        print(f"Minimax Player {self.player_id} thinking...")
+        if self.print_messages:
+            print(f"Minimax Player {self.player_id} thinking...")
         start_time = time.time()
         
         # 运行 Minimax 搜索

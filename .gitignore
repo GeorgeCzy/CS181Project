@@ -1,4 +1,5 @@
-**/*.pkl
-**/*.pth
-**/*.png
-training_logs
+# **/*.pkl
+# **/*.pth
+# **/*.png
+# training_logs
+**/temp

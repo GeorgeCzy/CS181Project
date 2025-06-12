@@ -541,7 +541,6 @@ class Game:
 
         if self.display:
             pygame.quit()
-            sys.exit()
 
         return result  # 返回游戏结果 (-1: playing, 0: 0 win, 1: 1 win, 2: draw)
 
@@ -672,7 +671,7 @@ class GameEnvironment:
     
 
 class BaseTrainer:
-    """统一的训练器基类"""
+    """统一的训练器基类 - 重构为批次统计"""
     
     def __init__(self, agent: Player, opponent: Player, 
                  reward_function=None, save_path: str = "model_data/"):
@@ -681,7 +680,7 @@ class BaseTrainer:
         self.env = GameEnvironment(reward_function)
         self.save_path = save_path
         
-        # 训练统计 - 添加学习率记录
+        # 训练统计 - 批次级别
         self.training_history = {
             'episodes': [],
             'rewards': [],
@@ -690,20 +689,64 @@ class BaseTrainer:
             'draws': [],
             'win_rates': [],
             'average_rewards': [],
-            'learning_rates': [],  # 新增：记录学习率变化
-            'epsilons': [],        # 新增：记录epsilon变化
-            'discount_factors': [] # 新增：记录折扣因子变化
+            'learning_rates': [],
+            'epsilons': [],
+            'discount_factors': []
         }
         
-        # 训练器级别的统计
-        self.wins = 0
-        self.losses = 0
-        self.draws = 0
-        self.win_history = []
-        self.window_size = 100
+        # 超参数更新控制
+        # self.lr_update_frequency = {
+        #     'phase1': 100,
+        #     'phase2': 150,
+        #     'phase3': 200
+        # }
+        
+        # 批次统计 - 重置为批次级别
+        self.batch_wins = 0
+        self.batch_losses = 0
+        self.batch_draws = 0
+        self.batch_episodes = 0
+        self.batch_rewards = []
+        
+        # 总体统计（仅用于全局记录）
+        self.total_episodes = 0
+        self.total_wins = 0
+        self.total_losses = 0
+        self.total_draws = 0
+        
+        # 当前训练阶段信息
+        self.current_phase = "phase1"
+        self.phase_episode_offset = 0  # 当前阶段的起始episode
         
         # 确保保存目录存在
         os.makedirs(save_path, exist_ok=True)
+    
+    def reset_batch_stats(self):
+        """重置批次统计"""
+        self.batch_wins = 0
+        self.batch_losses = 0
+        self.batch_draws = 0
+        self.batch_episodes = 0
+        self.batch_rewards = []
+    
+    def set_phase(self, phase_name: str, episode_offset: int = 0):
+        """设置当前训练阶段"""
+        self.current_phase = phase_name
+        self.phase_episode_offset = episode_offset
+        self.reset_batch_stats()
+    
+    def get_batch_win_rate(self) -> float:
+        """获取当前批次胜率"""
+        if self.batch_episodes == 0:
+            return 0.0
+        effective_wins = self.batch_wins + 0.5 * self.batch_draws
+        return effective_wins / self.batch_episodes
+    
+    def get_batch_avg_reward(self) -> float:
+        """获取当前批次平均奖励"""
+        if not self.batch_rewards:
+            return 0.0
+        return np.mean(self.batch_rewards)
     
     def train_episode(self, opponent=None, **kwargs) -> Tuple[float, int, int]:
         """训练一个回合，在episode结束时处理epsilon衰减"""
@@ -715,14 +758,14 @@ class BaseTrainer:
         steps = 0
         current_player = 0
         result = -1
-        max_steps = 1000  # 添加最大步数限制
+        max_steps = 1000
         
         while True:
             if current_player == self.agent.player_id:
                 # 智能体回合
                 valid_actions = board.get_all_possible_moves(self.agent.player_id)
                 if not valid_actions:
-                    result = 1 - self.agent.player_id  # 对手胜利
+                    result = 1 - self.agent.player_id
                     break
                 
                 board_before = copy.deepcopy(board)
@@ -731,7 +774,7 @@ class BaseTrainer:
                 # 执行动作
                 success = self._execute_action(board, action, self.agent.player_id)
                 if not success:
-                    result = 1 - self.agent.player_id  # 动作失败，对手胜利
+                    result = 1 - self.agent.player_id
                     break
                 
                 board_after = copy.deepcopy(board)
@@ -753,9 +796,8 @@ class BaseTrainer:
                 total_reward += reward
                 steps += 1
                 
-                # 检查是否超过最大步数
                 if steps >= max_steps:
-                    result = 2  # 平局
+                    result = 2
                     break
                 
                 if result != -1:
@@ -767,18 +809,17 @@ class BaseTrainer:
                 # 对手回合
                 if self.opponent.take_turn(board):
                     result = self._check_game_result(board)
-                    steps += 1  # 对手回合也要计算步数
+                    steps += 1
                     
-                    # 检查是否超过最大步数
                     if steps >= max_steps:
-                        result = 2  # 平局
+                        result = 2
                         break
                     
                     if result != -1:
                         break
                     current_player = 1 - current_player
                 else:
-                    result = self.agent.player_id  # 对手无法行动，智能体胜利
+                    result = self.agent.player_id
                     break
         
         # 统一处理episode结束后的工作
@@ -787,42 +828,55 @@ class BaseTrainer:
         return total_reward, steps, result
     
     def _handle_episode_end(self, result: int, total_reward: float):
-        """统一处理episode结束后的工作"""
+        """统一处理episode结束后的工作 - 使用智能体的统一超参数控制"""
+        # 更新批次统计
+        self.batch_episodes += 1
+        self.batch_rewards.append(total_reward)
+        
+        if result == self.agent.player_id:
+            self.batch_wins += 1
+        elif result == 1 - self.agent.player_id:
+            self.batch_losses += 1
+        else:
+            self.batch_draws += 1
+        
+        # 更新总体统计
+        self.total_episodes += 1
+        if result == self.agent.player_id:
+            self.total_wins += 1
+        elif result == 1 - self.agent.player_id:
+            self.total_losses += 1
+        else:
+            self.total_draws += 1
+        
         # 更新智能体统计
         self.agent.update_stats(result, total_reward)
         
-        # 更新训练器统计（平局算0.5胜率）
-        if result == self.agent.player_id:
-            self.wins += 1
-        elif result == 1 - self.agent.player_id:
-            self.losses += 1
-        else:  # result == 2 或其他平局值
-            self.draws += 1
+        # 计算当前批次胜率用于智能体参数调整
+        batch_win_rate = self.get_batch_win_rate()
+        current_episode_in_phase = self.batch_episodes - 1  # 从0开始
         
-        # 计算当前胜率（包含平局）
-        total_games = self.wins + self.losses + self.draws
-        if total_games > 0:
-            effective_wins = self.wins + 0.5 * self.draws
-            current_win_rate = effective_wins / total_games
+        # 使用智能体的统一分阶段控制方法
+        if hasattr(self.agent, 'decay_epsilon_by_phase') and hasattr(self.agent, 'update_learning_rate_by_phase'):
+            # 新的统一控制方法
+            self.agent.decay_epsilon_by_phase(self.current_phase, current_episode_in_phase, batch_win_rate)
+            self.agent.update_learning_rate_by_phase(self.current_phase, current_episode_in_phase, batch_win_rate)
         else:
-            current_win_rate = 0.0
+            # 后备方法
+            if hasattr(self.agent, 'decay_epsilon_by_phase'):
+                self.agent.decay_epsilon_by_phase(self.current_phase, current_episode_in_phase, batch_win_rate)
+            elif hasattr(self.agent, 'decay_epsilon'):
+                self.agent.decay_epsilon(batch_win_rate)
+            
+            # 学习率更新使用传统方法
+            if hasattr(self.agent, 'update_learning_rate'):
+                # 只在特定频率更新（后备机制）
+                if current_episode_in_phase > 0 and current_episode_in_phase % 100 == 0:
+                    self.agent.update_learning_rate(batch_win_rate)
         
-        # 记录胜率历史
-        self.win_history.append(current_win_rate)
-        if len(self.win_history) > self.window_size:
-            self.win_history.pop(0)
-        
-        # 如果智能体有epsilon衰减方法，调用它
-        if hasattr(self.agent, 'decay_epsilon'):
-            self.agent.decay_epsilon(current_win_rate)
-        
-        # 如果智能体有折扣因子更新方法，调用它
+        # 更新折扣因子 (AQ专有)
         if hasattr(self.agent, 'update_discount_factor'):
-            self.agent.update_discount_factor(current_win_rate)
-        
-        # 如果智能体有学习率更新方法，调用它
-        if hasattr(self.agent, 'update_learning_rate'):
-            self.agent.update_learning_rate(current_win_rate)
+            self.agent.update_discount_factor(batch_win_rate)
         
         # 更新训练历史
         self._update_training_history(total_reward, result)

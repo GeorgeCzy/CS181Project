@@ -4,7 +4,11 @@ import copy
 from typing import Tuple, List, Optional, Dict, Any
 import os
 from base import Board, Player
+from collections import namedtuple
+import torch
 
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+print(f"使用设备: {device}")
 
 def manhattan_distance(pos1: Tuple[int, int], pos2: Tuple[int, int]) -> int:
     return abs(pos1[0] - pos2[0]) + abs(pos1[1] - pos2[1])
@@ -456,6 +460,463 @@ class SimpleReward:
         except Exception as e:
             print(f"计算奖励时出错: {e}, 动作: {action}")
             raise e
+        
+class ImprovedReward(BaseReward):
+    """改进的奖励函数 - 解决反复移动问题"""
+
+    def __init__(self):
+        self.weights = {
+            "win_game": 50.0,        # 降低获胜奖励，避免过大梯度
+            "lose_game": -50.0,      # 降低失败惩罚
+            "draw_game": 0.0,
+            "capture_piece": 3.0,    # 降低吃子奖励
+            "be_captured": -3.0,     # 降低被吃惩罚
+            "mutual_destruction": -0.5,
+            "step_penalty": -0.1,    # 增加步数惩罚，强制快速结束
+            "repetition_penalty": -1.0,  # 减少重复动作惩罚
+            "progress_reward": 0.5,      # 减少进度奖励
+            "position_improvement": 0.2, # 减少位置改善奖励
+            "no_progress_penalty": -0.5, # 新增：无进展惩罚
+        }
+        
+        # 记录最近的动作历史
+        self.action_history = []
+        self.position_history = []
+        self.max_history = 10
+        self.last_capture_step = 0  # 记录上次吃子的步数
+        self.current_step = 0       # 当前步数
+
+    def detect_repetition(self, action: Tuple) -> float:
+        """检测重复动作并返回惩罚"""
+        if len(action) < 3:
+            return 0.0
+            
+        action_type, pos1, pos2 = action
+        
+        if action_type != "move" or pos2 is None:
+            return 0.0
+        
+        # 检查是否在最近几步中有相同或相反的移动
+        repetition_penalty = 0.0
+        
+        # 当前移动
+        current_move = (pos1, pos2)
+        reverse_move = (pos2, pos1)
+        
+        # 检查历史中的重复
+        recent_actions = self.action_history[-4:]  # 只检查最近4步，减少惩罚
+        
+        for i, hist_action in enumerate(recent_actions):
+            if len(hist_action) >= 3 and hist_action[0] == "move":
+                hist_move = (hist_action[1], hist_action[2])
+                
+                # 完全相同的移动
+                if hist_move == current_move:
+                    repetition_penalty += self.weights["repetition_penalty"] * (1.0 - i * 0.2)
+                
+                # 相反的移动（往返移动）
+                elif hist_move == reverse_move:
+                    repetition_penalty += self.weights["repetition_penalty"] * 1.2 * (1.0 - i * 0.2)
+        
+        return repetition_penalty
+
+    def calculate_position_value(self, board, pos: Tuple[int, int], player_id: int) -> float:
+        """计算位置的战略价值"""
+        r, c = pos
+        value = 0.0
+        
+        # 简化中心位置价值计算
+        center_distance = abs(r - 3) + abs(c - 3.5)
+        center_value = max(0, 1 - center_distance * 0.1)  # 降低中心价值
+        value += center_value
+        
+        # 检查周围的威胁和机会
+        piece = board.get_piece(r, c)
+        if piece and piece.player == player_id and piece.revealed:
+            for dr, dc in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+                nr, nc = r + dr, c + dc
+                if 0 <= nr < 7 and 0 <= nc < 8:
+                    neighbor = board.get_piece(nr, nc)
+                    if neighbor and neighbor.revealed and neighbor.player != player_id:
+                        # 能攻击敌人增加价值
+                        if piece.compare_strength(neighbor) == 1:
+                            value += 1.0  # 降低攻击价值
+                        # 被威胁减少价值
+                        elif piece.compare_strength(neighbor) == -1:
+                            value -= 0.8  # 降低威胁惩罚
+        
+        return value
+
+    def calculate_progress_reward(self, board_before, board_after, 
+                                action: Tuple, player_id: int) -> float:
+        """计算游戏进度奖励"""
+        progress_reward = 0.0
+        
+        # 1. 翻开新棋子给予奖励
+        if len(action) >= 2 and action[0] == "reveal":
+            progress_reward += self.weights["progress_reward"]
+        
+        # 2. 移动到新位置给予奖励
+        elif len(action) >= 3 and action[0] == "move":
+            pos1, pos2 = action[1], action[2]
+            
+            # 简化位置历史检查
+            if pos2 not in self.position_history[-10:]:  # 减少到最近10步
+                progress_reward += self.weights["progress_reward"] * 0.3
+            
+            # 简化位置价值改善奖励
+            old_value = self.calculate_position_value(board_before, pos1, player_id)
+            new_value = self.calculate_position_value(board_after, pos2, player_id)
+            
+            if new_value > old_value:
+                progress_reward += self.weights["position_improvement"] * (new_value - old_value)
+        
+        return progress_reward
+
+    def update_history(self, action: Tuple):
+        """更新动作和位置历史"""
+        self.action_history.append(action)
+        if len(self.action_history) > self.max_history:
+            self.action_history.pop(0)
+        
+        # 记录移动的目标位置
+        if len(action) >= 3 and action[0] == "move":
+            self.position_history.append(action[2])
+            if len(self.position_history) > self.max_history * 2:
+                self.position_history.pop(0)
+
+    def calculate_reward(
+        self,
+        board_before,
+        board_after,
+        action: Tuple[str, Tuple[int, int], Optional[Tuple[int, int]]],
+        player_id: int,
+        result: int,
+    ) -> float:
+        """改进的奖励计算 - 重点解决步长过长问题"""
+        try:
+            self.current_step += 1
+            
+            # 处理动作解包
+            if len(action) == 2:
+                action_type, pos1 = action
+                pos2 = None
+                action = (action_type, pos1, pos2)
+            elif len(action) == 3:
+                action_type, pos1, pos2 = action
+            else:
+                return -2.0
+
+            # 游戏结束奖励
+            if result == player_id:
+                # 奖励快速获胜
+                step_bonus = max(0, (500 - self.current_step) * 0.02)
+                return self.weights["win_game"] + step_bonus
+            if result == 1 - player_id:
+                return self.weights["lose_game"]
+            if result == 2:
+                return self.weights["draw_game"]
+
+            # 基础步数惩罚（递增）
+            step_penalty = self.weights["step_penalty"]
+            if self.current_step > 200:
+                step_penalty *= 2  # 200步后加倍惩罚
+            if self.current_step > 400:
+                step_penalty *= 3  # 400步后三倍惩罚
+                
+            total_reward = step_penalty
+
+            # 无进展惩罚：如果很长时间没有吃子
+            steps_since_capture = self.current_step - self.last_capture_step
+            if steps_since_capture > 50:
+                total_reward += self.weights["no_progress_penalty"] * (steps_since_capture / 50.0)
+
+            # 检测重复动作惩罚
+            repetition_penalty = self.detect_repetition(action)
+            total_reward += repetition_penalty
+
+            # 简化进度奖励
+            progress_reward = self.calculate_progress_reward(board_before, board_after, action, player_id)
+            total_reward += progress_reward
+
+            # 处理移动动作的战斗奖励
+            if action_type == "move" and pos2 is not None:
+                start_pos, end_pos = pos1, pos2
+                moving_piece_before = board_before.get_piece(start_pos[0], start_pos[1])
+                target_piece_before = board_before.get_piece(end_pos[0], end_pos[1])
+                piece_after = board_after.get_piece(end_pos[0], end_pos[1])
+
+                # 战斗结果奖励
+                if target_piece_before and target_piece_before.player != player_id:
+                    target_value = self.get_piece_value(target_piece_before.strength)
+                    my_value = self.get_piece_value(moving_piece_before.strength)
+                    
+                    # 记录吃子时间
+                    self.last_capture_step = self.current_step
+                    
+                    if piece_after and piece_after.player == player_id:
+                        # 成功吃子
+                        total_reward += self.weights["capture_piece"] * target_value
+                        if target_value > my_value:
+                            total_reward += (target_value - my_value) * 0.3  # 降低额外奖励
+                    elif not piece_after:
+                        # 同归于尽
+                        value_diff = target_value - my_value
+                        total_reward += self.weights["mutual_destruction"] + value_diff * 0.5
+                    else:
+                        # 被吃掉
+                        total_reward += self.weights["be_captured"] * my_value
+
+            # 更新历史记录
+            self.update_history(action)
+
+            # 限制奖励范围，避免梯度爆炸
+            total_reward = np.clip(total_reward, -10.0, 10.0)
+
+            return total_reward
+            
+        except Exception as e:
+            print(f"计算奖励时出错: {e}, 动作: {action}")
+            return -2.0
+
+    def reset_history(self):
+        """重置历史记录（每局游戏开始时调用）"""
+        self.action_history = []
+        self.position_history = []
+        self.last_capture_step = 0
+        self.current_step = 0
+
+
+class AggressiveReward(BaseReward):
+    """激进的奖励函数 - 强制学习攻击性策略"""
+
+    def __init__(self):
+        self.weights = {
+            "win_game": 100.0,
+            "lose_game": -100.0,
+            "draw_game": -10.0,        # 平局也是负奖励，鼓励主动进攻
+            "capture_piece": 15.0,     # 大幅提高吃子奖励
+            "be_captured": -8.0,
+            "mutual_destruction": 2.0,  # 同归于尽变为正奖励（鼓励交换）
+            "step_penalty": -0.2,      # 增加步数惩罚
+            "repetition_penalty": -3.0, # 大幅增加重复惩罚
+            "no_progress_penalty": -2.0, # 增加无进展惩罚
+            "reveal_bonus": 2.0,       # 翻开奖励
+            "attack_bonus": 5.0,       # 新增：主动攻击奖励
+            "retreat_penalty": -2.0,   # 新增：后退惩罚
+        }
+        
+        self.action_history = []
+        self.position_history = []
+        self.last_capture_step = 0
+        self.current_step = 0
+        self.board_center = (3, 4)  # 棋盘中心
+        
+    def is_attacking_move(self, board_before: Board, action: Tuple, player_id: int) -> bool:
+        """判断是否为攻击性移动"""
+        if len(action) < 3 or action[0] != "move":
+            return False
+            
+        _, pos1, pos2 = action
+        if pos2 is None:
+            return False
+            
+        # 检查目标位置是否有敌方棋子
+        target_piece = board_before.get_piece(pos2[0], pos2[1])
+        if target_piece and target_piece.player != player_id:
+            return True
+            
+        # 检查是否向敌方棋子靠近
+        moving_piece = board_before.get_piece(pos1[0], pos1[1])
+        if not moving_piece or not moving_piece.revealed:
+            return False
+            
+        # 找最近的敌方棋子，看是否在靠近
+        min_dist_before = float('inf')
+        min_dist_after = float('inf')
+        
+        for r in range(7):
+            for c in range(8):
+                piece = board_before.get_piece(r, c)
+                if piece and piece.player != player_id and piece.revealed:
+                    dist_before = abs(r - pos1[0]) + abs(c - pos1[1])
+                    dist_after = abs(r - pos2[0]) + abs(c - pos2[1])
+                    min_dist_before = min(min_dist_before, dist_before)
+                    min_dist_after = min(min_dist_after, dist_after)
+        
+        return min_dist_after < min_dist_before
+
+    def is_retreating_move(self, board_before: Board, action: Tuple, player_id: int) -> bool:
+        """判断是否为后退移动"""
+        if len(action) < 3 or action[0] != "move":
+            return False
+            
+        _, pos1, pos2 = action
+        if pos2 is None:
+            return False
+            
+        moving_piece = board_before.get_piece(pos1[0], pos1[1])
+        if not moving_piece or not moving_piece.revealed:
+            return False
+            
+        # 检查是否远离所有敌方棋子
+        total_dist_before = 0
+        total_dist_after = 0
+        enemy_count = 0
+        
+        for r in range(7):
+            for c in range(8):
+                piece = board_before.get_piece(r, c)
+                if piece and piece.player != player_id and piece.revealed:
+                    dist_before = abs(r - pos1[0]) + abs(c - pos1[1])
+                    dist_after = abs(r - pos2[0]) + abs(c - pos2[1])
+                    total_dist_before += dist_before
+                    total_dist_after += dist_after
+                    enemy_count += 1
+        
+        if enemy_count == 0:
+            return False
+            
+        avg_dist_before = total_dist_before / enemy_count
+        avg_dist_after = total_dist_after / enemy_count
+        
+        return avg_dist_after > avg_dist_before + 0.5  # 明显远离
+
+    def detect_repetition(self, action: Tuple) -> float:
+        """更严厉的重复检测"""
+        if len(action) < 3 or action[0] != "move":
+            return 0.0
+            
+        _, pos1, pos2 = action
+        if pos2 is None:
+            return 0.0
+        
+        current_move = (pos1, pos2)
+        reverse_move = (pos2, pos1)
+        
+        repetition_penalty = 0.0
+        recent_actions = self.action_history[-8:]  # 检查最近8步
+        
+        for i, hist_action in enumerate(recent_actions):
+            if len(hist_action) >= 3 and hist_action[0] == "move":
+                hist_move = (hist_action[1], hist_action[2])
+                
+                if hist_move == current_move:
+                    # 完全相同的移动，惩罚递增
+                    repetition_penalty += self.weights["repetition_penalty"] * (2 ** (len(recent_actions) - i))
+                elif hist_move == reverse_move:
+                    # 往返移动，更严重的惩罚
+                    repetition_penalty += self.weights["repetition_penalty"] * 2 * (2 ** (len(recent_actions) - i))
+        
+        return repetition_penalty
+
+    def calculate_reward(self, board_before, board_after, action: Tuple, player_id: int, result: int) -> float:
+        """激进的奖励计算"""
+        try:
+            self.current_step += 1
+            
+            # 处理动作解包
+            if len(action) == 2:
+                action_type, pos1 = action
+                pos2 = None
+                action = (action_type, pos1, pos2)
+            elif len(action) == 3:
+                action_type, pos1, pos2 = action
+            else:
+                return -5.0
+
+            # 游戏结束奖励
+            if result == player_id:
+                step_bonus = max(0, (300 - self.current_step) * 0.1)  # 更大的快速获胜奖励
+                return self.weights["win_game"] + step_bonus
+            if result == 1 - player_id:
+                return self.weights["lose_game"]
+            if result == 2:
+                return self.weights["draw_game"]
+
+            # 基础步数惩罚（更严厉）
+            step_penalty = self.weights["step_penalty"]
+            if self.current_step > 150:
+                step_penalty *= 3
+            if self.current_step > 300:
+                step_penalty *= 5
+                
+            total_reward = step_penalty
+
+            # 无进展惩罚
+            steps_since_capture = self.current_step - self.last_capture_step
+            if steps_since_capture > 30:  # 降低到30步
+                total_reward += self.weights["no_progress_penalty"] * (steps_since_capture / 30.0)
+
+            # 重复动作惩罚
+            repetition_penalty = self.detect_repetition(action)
+            total_reward += repetition_penalty
+
+            # 动作特定奖励
+            if action_type == "reveal":
+                total_reward += self.weights["reveal_bonus"]
+                
+            elif action_type == "move" and pos2 is not None:
+                start_pos, end_pos = pos1, pos2
+                moving_piece_before = board_before.get_piece(start_pos[0], start_pos[1])
+                target_piece_before = board_before.get_piece(end_pos[0], end_pos[1])
+                piece_after = board_after.get_piece(end_pos[0], end_pos[1])
+
+                # 战斗奖励
+                if target_piece_before and target_piece_before.player != player_id:
+                    target_value = self.get_piece_value(target_piece_before.strength)
+                    my_value = self.get_piece_value(moving_piece_before.strength)
+                    
+                    self.last_capture_step = self.current_step
+                    
+                    if piece_after and piece_after.player == player_id:
+                        # 成功吃子 - 大奖励
+                        total_reward += self.weights["capture_piece"] * target_value
+                        total_reward += self.weights["attack_bonus"]  # 额外攻击奖励
+                        
+                        if target_value > my_value:
+                            total_reward += (target_value - my_value) * 2.0  # 更大的以小博大奖励
+                            
+                    elif not piece_after:
+                        # 同归于尽 - 现在是正奖励
+                        total_reward += self.weights["mutual_destruction"] * min(target_value, my_value)
+                    else:
+                        # 被吃掉 - 仍然惩罚，但减少惩罚以鼓励尝试
+                        total_reward += self.weights["be_captured"] * my_value * 0.5
+                
+                # 移动行为分析
+                else:
+                    # 检查是否为攻击性移动
+                    if self.is_attacking_move(board_before, action, player_id):
+                        total_reward += self.weights["attack_bonus"] * 0.5  # 较小的攻击奖励
+                    
+                    # 检查是否为后退移动
+                    elif self.is_retreating_move(board_before, action, player_id):
+                        total_reward += self.weights["retreat_penalty"]
+
+            # 更新历史
+            self.action_history.append(action)
+            if len(self.action_history) > 10:
+                self.action_history.pop(0)
+            
+            if action_type == "move" and pos2 is not None:
+                self.position_history.append(pos2)
+                if len(self.position_history) > 20:
+                    self.position_history.pop(0)
+
+            # 限制奖励范围
+            return np.clip(total_reward, -20.0, 20.0)
+            
+        except Exception as e:
+            print(f"计算奖励时出错: {e}, 动作: {action}")
+            return -5.0
+
+    def reset_history(self):
+        """重置历史记录"""
+        self.action_history = []
+        self.position_history = []
+        self.last_capture_step = 0
+        self.current_step = 0
 
 
 class FeatureExtractor:
@@ -736,3 +1197,65 @@ def load_model_data(filename: str, save_path: str = "model_data/") -> Optional[D
     except Exception as e:
         print(f"加载模型失败: {e}")
         return None
+
+
+# 经验回放缓冲区
+Experience = namedtuple('Experience', ['state', 'action', 'reward', 'next_state', 'result'])
+
+class PrioritizedReplayBuffer:
+    """优先级经验回放缓冲区"""
+    def __init__(self, capacity: int, alpha: float = 0.6, beta: float = 0.4):
+        self.capacity = capacity
+        self.alpha = alpha      # 优先级指数
+        self.beta = beta        # 重要性采样指数
+        self.beta_increment = 0.001
+        self.buffer = []
+        self.priorities = []
+        self.pos = 0
+    
+    def push(self, state, action, reward, next_state, result):
+        """添加新经验"""
+        max_priority = max(self.priorities) if self.priorities else 1.0
+        
+        if len(self.buffer) < self.capacity:
+            self.buffer.append(Experience(state, action, reward, next_state, result))
+            self.priorities.append(max_priority)
+        else:
+            self.buffer[self.pos] = Experience(state, action, reward, next_state, result)
+            self.priorities[self.pos] = max_priority
+        
+        self.pos = (self.pos + 1) % self.capacity
+    
+    def sample(self, batch_size: int):
+        """采样经验"""
+        if len(self.buffer) == 0:
+            return []
+            
+        # 计算采样概率
+        priorities = np.array(self.priorities)
+        probs = priorities ** self.alpha
+        probs /= probs.sum()
+        
+        # 采样索引
+        indices = np.random.choice(len(self.buffer), batch_size, p=probs)
+        
+        # 计算重要性权重
+        total = len(self.buffer)
+        weights = (total * probs[indices]) ** (-self.beta)
+        weights /= weights.max()
+        weights = torch.FloatTensor(weights).to(device)
+        
+        # 获取经验
+        experiences = [self.buffer[idx] for idx in indices]
+        
+        self.beta = min(1.0, self.beta + self.beta_increment)
+        
+        return experiences, indices, weights
+    
+    def update_priorities(self, indices, td_errors):
+        """更新优先级"""
+        for idx, td_error in zip(indices, td_errors):
+            self.priorities[idx] = abs(td_error) + 1e-6  # 添加小值防止优先级为0
+    
+    def __len__(self):
+        return len(self.buffer)
