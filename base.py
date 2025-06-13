@@ -48,7 +48,7 @@ class Piece:
             setattr(result, k, copy.deepcopy(v, memo))
         return result
 
-    @property
+    @property # 使用@property装饰器使得player, strength, reveal属性只读
     def player(self):
         """read only"""
         if self._revealed:
@@ -67,7 +67,7 @@ class Piece:
         """read only"""
         return self._revealed
 
-    def get_player(self, Administrator=False):
+    def get_player(self, Administrator=False): # 这两个是给board用的，能够看到所有的棋子
         """
         Returns the player ID of this piece.
         return -1 if the piece is not revealed.
@@ -82,7 +82,7 @@ class Piece:
             return self._strength
         return -1
 
-    def reveal(self):
+    def reveal(self): # 只通过这个方法更改 piece 的 revealed 状态
         """only way to reveal"""
         self._revealed = True
 
@@ -93,7 +93,7 @@ def compare_strength(self_strength, other_strength):
     return -1: cannot capture, 0: same strength, 1: can capture
     -2: one of the pieces is unrevealed.
     """
-    if self_strength == -1 or other_strength == -1:
+    if self_strength == -1 or other_strength == -1: # 如果其中一个没有翻开，无法比较
         return -2
     if self_strength == 8 and other_strength == 1:
         return -1
@@ -113,10 +113,11 @@ class Board:
         self.board = [[None for _ in range(COLS)] for _ in range(ROWS)]
         self._initialize_pieces()
         self._died = {0: [], 1: []}  # Track died pieces for each player
+        # 增加了 died 字典来收纳被吃掉的棋子，用于解决某些问题？我忘了为啥要了，但是后面用了
 
     def _initialize_pieces(self):
         """Initializes and shuffles all pieces on the board."""
-        pieces = [(i, j) for i in range(2) for j in range(1, 9)]
+        pieces = [(i, j) for i in range(2) for j in range(1, 9)] # 这个做了下简化，但基本没变
         random.shuffle(pieces)
         for i in [0, 6]:
             for j in range(8):
@@ -865,7 +866,13 @@ class BaseTrainer:
         # 更新智能体统计
         self.agent.update_stats(result, total_reward)
 
-        # 计算当前批次胜率用于智能体参数调整
+        # 添加结果追踪
+        if hasattr(self.agent, '_recent_results'):
+            self.agent._recent_results.append(result)
+        else:
+            self.agent._recent_results = deque(maxlen=200)
+            self.agent._recent_results.append(result)
+        
         batch_win_rate = self.get_batch_win_rate()
         current_episode_in_phase = self.batch_episodes - 1  # 从0开始
 

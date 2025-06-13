@@ -1,6 +1,7 @@
 import numpy as np
 import random
 import copy
+from collections import deque
 from typing import Tuple, List, Dict
 from base import Player, BaseTrainer, GameEnvironment, Board
 from utils import save_model_data, load_model_data
@@ -241,7 +242,7 @@ class QLearningAgent(Player):
             print(f"epsilon衰减: {old_epsilon:.3f} -> {self.epsilon:.3f}")
 
     def decay_epsilon_by_phase(self, phase_name: str, episode_in_phase: int, batch_win_rate: float = None):
-        """分阶段的epsilon衰减控制"""
+        """改进的分阶段epsilon衰减控制 - 对近期胜率更敏感"""
         if phase_name not in self.phase_configs:
             self.decay_epsilon(batch_win_rate)
             return
@@ -254,42 +255,61 @@ class QLearningAgent(Player):
         min_epsilon = config["epsilon_min"]
         decay_rate = config["epsilon_decay_rate"]
         
+        # 计算最近100回合的胜率(如果可用)
+        recent_win_rate = None
+        if hasattr(self, '_recent_results') and len(self._recent_results) > 0:
+            recent_wins = sum(1 for res in self._recent_results[-100:] if res == self.player_id)
+            recent_draws = sum(1 for res in self._recent_results[-100:] if res == 2)
+            recent_count = min(len(self._recent_results), 100)
+            recent_win_rate = (recent_wins + 0.5 * recent_draws) / recent_count if recent_count > 0 else None
+        
         # 阶段内强制探索期
         if episode_in_phase < force_until:
             self.epsilon = max(min_epsilon, self.epsilon * 0.9998)
             if episode_in_phase % 100 == 0:
                 print(f"{phase_name}: 强制探索期 ({episode_in_phase}/{force_until}), "
-                      f"保持高epsilon={self.epsilon:.3f}")
+                    f"保持高epsilon={self.epsilon:.3f}")
             return
         
         # 阶段内自适应衰减期
         old_epsilon = self.epsilon
         
-        if batch_win_rate is not None:
-            if batch_win_rate < 0.2:
-                # 胜率低，减缓衰减
-                actual_decay = 0.9998
+        # 优先使用最近100回合的胜率，否则使用批次胜率
+        win_rate_to_use = recent_win_rate if recent_win_rate is not None else batch_win_rate
+        
+        if win_rate_to_use is not None:
+            # 胜率低于40%时，增加epsilon
+            if win_rate_to_use < 0.4:
+                # 胜率越低，epsilon增加越多
+                actual_decay = 1.01 + (0.4 - win_rate_to_use) * 0.1
                 if episode_in_phase % 50 == 0:
-                    print(f"{phase_name}: 批次胜率过低({batch_win_rate:.3f})，减缓epsilon衰减")
-            elif batch_win_rate > 0.7:
-                # 胜率高，加快衰减
-                actual_decay = 0.998
-                if episode_in_phase % 50 == 0:
-                    print(f"{phase_name}: 批次胜率较高({batch_win_rate:.3f})，加快epsilon衰减")
+                    print(f"{phase_name}: 最近胜率过低({win_rate_to_use:.3f})，提高epsilon以增加探索")
+            # 胜率40%-60%之间，缓慢衰减
+            elif win_rate_to_use < 0.6:
+                actual_decay = 0.999
+                if episode_in_phase % 100 == 0:
+                    print(f"{phase_name}: 胜率适中({win_rate_to_use:.3f})，缓慢衰减epsilon")
+            # 胜率高于60%，可以加速衰减
             else:
-                # 正常衰减
                 actual_decay = decay_rate
+                if episode_in_phase % 50 == 0:
+                    print(f"{phase_name}: 胜率良好({win_rate_to_use:.3f})，正常衰减epsilon")
         else:
             actual_decay = decay_rate
         
-        self.epsilon = max(min_epsilon, self.epsilon * actual_decay)
+        # 应用衰减或增长因子
+        self.epsilon = min(0.9, max(min_epsilon, self.epsilon * actual_decay))
         
-        # 记录显著的epsilon变化
-        if abs(old_epsilon - self.epsilon) > 0.02 or episode_in_phase % 100 == 0:
-            win_rate_str = f"{batch_win_rate:.3f}" if batch_win_rate is not None else "N/A"
+        # 记录epsilon变化
+        if abs(old_epsilon - self.epsilon) > 0.01 or episode_in_phase % 100 == 0:
+            win_rate_str = f"{win_rate_to_use:.3f}" if win_rate_to_use is not None else "N/A"
             print(f"{phase_name}: Episode {episode_in_phase}, "
-                  f"epsilon: {old_epsilon:.3f} -> {self.epsilon:.3f}, "
-                  f"批次胜率: {win_rate_str}")
+                f"epsilon: {old_epsilon:.3f} → {self.epsilon:.3f}, "
+                f"最近胜率: {win_rate_str}")
+        
+        # 维护最近结果队列
+        if not hasattr(self, '_recent_results'):
+            self._recent_results = deque(maxlen=200)
 
     def update_learning_rate(self, batch_win_rate: float = None):
         """原始的学习率更新方法（后备）"""

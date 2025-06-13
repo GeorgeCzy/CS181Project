@@ -69,7 +69,7 @@ class HumanPlayer(Player):
                             self.selected_piece_pos == piece_moving
                             and piece
                             and not piece.revealed
-                        ):  # (第二次点击)
+                        ):  # (第二次点击) 如果两次点的都是这个且没有翻开，相当于确认。human 这个我忘测试了，你可以跑跑看看
                             piece.reveal()
                             self.selected_piece_pos = None
                             return True  # Revealed piece, turn ends
@@ -109,7 +109,9 @@ class RandomPlayer(Player):
                     return True  # Turn ended
             elif action_type == "move":
                 start_pos, end_pos = action[1], action[2]
-                if board.try_move(start_pos, end_pos):
+                if board.try_move(
+                    start_pos, end_pos
+                ):  # 我没有加很多判断，我相信给出的 possible actions 是正确的
                     return True  # Turn ended
         return False  # No valid moves found
 
@@ -359,7 +361,8 @@ class MinimaxPlayer(Player):
 
         return score
 
-    def _minimax(self, board, depth, maximizing_player_id):
+    def _minimax(self, board, depth, maximizing_player_id, alpha=float("-inf"), beta=float("inf")):
+        """带 Alpha-Beta 剪枝的 Minimax 搜索"""
         # Base case: max_depth reached or game over
         # 优化：在每次评估时，判断游戏是否结束，避免不必要的递归
         self_pieces_count = 8 - len(board._died[self.player_id])
@@ -370,27 +373,8 @@ class MinimaxPlayer(Player):
 
         current_player = maximizing_player_id
         is_maximizing_player = current_player == self.player_id
-
-        min_strength_value = min(
-            (
-                piece.strength
-                for row in board.board
-                for piece in row
-                if piece and piece.revealed
-            ),
-            default=0,
-        )
-        max_strength_value = max(
-            (
-                piece.strength
-                for row in board.board
-                for piece in row
-                if piece and piece.revealed
-            ),
-            default=0,
-        )
-
         best_move = None
+
         # 如果是最大化玩家（AI自己）
         if is_maximizing_player:
             max_eval = float("-inf")
@@ -410,11 +394,12 @@ class MinimaxPlayer(Player):
                     # 不需要验证动作正确性，正确性在board里验证过了
                     # 假设翻开的棋子可能目前未翻开的任意棋子，进行单层expectmax评估
                     eval = 0
-                    for (
-                        unveal_pos
-                    ) in (
-                        board.get_unveal_pieces()
-                    ):  # 注意，这里是board，使得unveal piece保持不变
+                    unveal_pieces = board.get_unveal_pieces()
+                    if not unveal_pieces:  # 防止除零错误
+                        continue
+                    
+                    for unveal_pos in unveal_pieces:
+                        # 注意，这里是board，使得unveal piece保持不变
                         # 轮流将每一个未翻开的棋子翻开并置于reveal的位置
                         # 实现方法是将该未翻开棋子与原本要翻开位置的棋子交换位置
                         temp_board = copy.deepcopy(board)  # 每一次temp board重置
@@ -434,22 +419,8 @@ class MinimaxPlayer(Player):
                         eval += self._minimax(temp_board, 0, 1 - current_player)[
                             0
                         ]  # 递归调用 Minimax, 只评估一层
-                    # try:
                     eval = eval / len(board.get_unveal_pieces())  # 取平均值作为评估
-                    # except ZeroDivisionError:
-                    #     print(
-                    #         [
-                    #             (
-                    #                 board.board[i][j].revealed
-                    #                 if board.board[i][j]
-                    #                 else board.board[i][j]
-                    #             )
-                    #             for i in range(ROWS)
-                    #             for j in range(COLS)
-                    #         ]
-                    #     )
-                    #     print(action)
-                    #     raise ZeroDivisionError("No unrevealed pieces to evaluate")
+                    
                 elif action_type == "move":
                     start_pos, end_pos = action[1], action[2]
                     # 在临时棋盘上尝试移动
@@ -463,6 +434,11 @@ class MinimaxPlayer(Player):
                 if eval > max_eval:
                     max_eval = eval
                     best_move = action
+                    
+                alpha = max(alpha, eval)
+                if beta <= alpha:
+                    break  # Beta剪枝
+                
             return max_eval, best_move
         # 如果是最小化玩家（对手）
         else:
@@ -478,7 +454,10 @@ class MinimaxPlayer(Player):
                 if action_type == "reveal":
                     r, c = action[1]
                     eval = 0
-                    for unveal_pos in board.get_unveal_pieces():
+                    unveal_pieces = board.get_unveal_pieces()
+                    if not unveal_pieces:  # 防止除零错误
+                        continue
+                    for unveal_pos in unveal_pieces:
                         # 轮流将每一个未翻开的棋子翻开并置于reveal的位置
                         temp_board = copy.deepcopy(board)
                         unveal_piece = temp_board.get_piece(
@@ -508,6 +487,11 @@ class MinimaxPlayer(Player):
                 if eval < min_eval:
                     min_eval = eval
                     best_move = action
+                    
+                beta = min(beta, eval)
+                if beta <= alpha:
+                    break  # Alpha剪枝
+                
             return min_eval, best_move
 
     def take_turn(self, board):
@@ -529,8 +513,9 @@ class MinimaxPlayer(Player):
             if action_type == "reveal":
                 r, c = best_action[1]
                 piece = board.get_piece(r, c)
-                piece.reveal()
-                return True
+                if piece and not piece.revealed:
+                    piece.reveal()
+                    return True
             elif action_type == "move":
                 start_pos, end_pos = best_action[1], best_action[2]
                 return board.try_move(start_pos, end_pos)
@@ -558,7 +543,7 @@ class Game:
                 # 修改这里，将人类玩家替换为AI玩家
                 # 0: MinimaxPlayer(0, max_depth=1, print_messages=False),  # 红色AI
                 # 0: QLearningPlayer(0), # 红色AI
-                0: RandomPlayer(0), # 红色AI
+                0: RandomPlayer(0),  # 红色AI
                 1: GreedyPlayer(1, print_messages=False),  # 蓝色AI
                 # 或者可以是一个Minimax vs Random
                 # 0: MinimaxPlayer(0, max_depth=3),

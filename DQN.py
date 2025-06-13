@@ -255,32 +255,32 @@ class DQNAgent(Player):
         # 创建网络... (保持原有代码)
         if use_dueling and use_double:
             self.q_network = DuelingDoubleDQN(
-                state_size, action_size, hidden_size=256
+                state_size, action_size, hidden_size=512
             ).to(device)
             self.target_network = DuelingDoubleDQN(
-                state_size, action_size, hidden_size=256
+                state_size, action_size, hidden_size=512
             ).to(device)
             ai_type = "D3QN"
         elif use_dueling:
-            self.q_network = DQN(state_size, action_size, hidden_size=256).to(device)
-            self.target_network = DQN(state_size, action_size, hidden_size=256).to(
+            self.q_network = DQN(state_size, action_size, hidden_size=512).to(device)
+            self.target_network = DQN(state_size, action_size, hidden_size=512).to(
                 device
             )
             ai_type = "DuelDQN"
         elif use_double:
-            self.q_network = DoubleDQN(state_size, action_size, hidden_size=256).to(
+            self.q_network = DoubleDQN(state_size, action_size, hidden_size=512).to(
                 device
             )
             self.target_network = DoubleDQN(
-                state_size, action_size, hidden_size=256
+                state_size, action_size, hidden_size=512
             ).to(device)
             ai_type = "DoubleDQN"
         else:
-            self.q_network = DoubleDQN(state_size, action_size, hidden_size=256).to(
+            self.q_network = DoubleDQN(state_size, action_size, hidden_size=512).to(
                 device
             )
             self.target_network = DoubleDQN(
-                state_size, action_size, hidden_size=256
+                state_size, action_size, hidden_size=512
             ).to(device)
             ai_type = "DQN"
 
@@ -758,19 +758,15 @@ class DQNAgent(Player):
         self.target_network.load_state_dict(self.q_network.state_dict())
 
     def normalize_reward(self, reward: float) -> float:
-        """修复奖励归一化 - 保持更多信号强度"""
-        if abs(reward) < 1e-6:
-            return 0.0
-        
-        # 使用更保守的归一化，保持奖励的差异性
-        if abs(reward) <= 2.0:
-            return reward  # 小奖励完全不压缩
+        """更强的奖励信号，完全不压缩小奖励"""
+        if abs(reward) <= 5.0:
+            return reward * 1.5  # 放大小奖励
         elif abs(reward) <= 10.0:
-            # 轻度压缩
-            return np.sign(reward) * (2.0 + 0.8 * (abs(reward) - 2.0))
+            # 轻度压缩但保持放大
+            return np.sign(reward) * (7.5 + 0.9 * (abs(reward) - 5.0))
         else:
             # 中度压缩
-            return np.sign(reward) * (2.0 + 0.8 * 8.0 + 0.5 * (abs(reward) - 10.0))
+            return np.sign(reward) * (12.0 + 0.6 * (abs(reward) - 10.0))
 
     def store_experience(
         self,
@@ -879,10 +875,28 @@ class DQNAgent(Player):
         # 计算损失 - 如果Q值差异太小，人为增加一些多样性
         q_diff = (target_q_values - current_q_values.squeeze()).abs().mean().item()
         if q_diff < 0.01:  # Q值差异太小
-            print(f"Q值差异过小({q_diff:.6f})，添加学习增强...")
-            # 添加一些噪声来增加学习信号
-            target_noise = torch.randn_like(target_q_values) * 0.05
+            # 动态噪声强度：差异越小，噪声越大
+            noise_scale = 0.25 * (0.01 / max(q_diff, 0.001))
+            noise_scale = min(noise_scale, 0.5)  # 限制最大噪声
+            
+            print(f"Q值差异过小({q_diff:.6f})，添加强化学习增强(噪声={noise_scale:.3f})...")
+            
+            # 加强噪声并确保其包含负值，增加学习信号多样性
+            target_noise = (torch.randn_like(target_q_values) * noise_scale) 
             target_q_values = target_q_values + target_noise
+            
+            # 每100次小差异后，执行一次更激进的梯度提升
+            if not hasattr(self, '_small_diff_counter'):
+                self._small_diff_counter = 0
+            self._small_diff_counter += 1
+            
+            if self._small_diff_counter % 100 == 0:
+                # 定期执行更激进的学习率调整
+                current_lr = self.get_learning_rate()
+                boost_lr = min(current_lr * 3, 0.01)  # 临时大幅提升学习率
+                for param_group in self.optimizer.param_groups:
+                    param_group['lr'] = boost_lr
+                print(f"执行学习率提升: {current_lr:.5f} -> {boost_lr:.5f}")
         
         loss = F.mse_loss(current_q_values.squeeze(), target_q_values, reduction='none')
         weighted_loss = (loss * weights_tensor).mean()
@@ -1094,79 +1108,83 @@ class DQNAgent(Player):
                     f"批次胜率: {win_rate_str}"
                 )
 
-    def decay_epsilon_by_phase(
-        self, phase_name: str, episode_in_phase: int, batch_win_rate: float = None
-    ):
-        """分阶段的epsilon衰减控制"""
+    def decay_epsilon_by_phase(self, phase_name: str, episode_in_phase: int, batch_win_rate: float = None):
+        """改进的分阶段epsilon衰减控制 - 对近期胜率更敏感"""
         if phase_name not in self.phase_configs:
-            # 回退到原来的方法
             self.decay_epsilon(batch_win_rate)
             return
-
+        
         # 更新内部计数器
         self.episode_in_phase = episode_in_phase
-
+        
         config = self.phase_configs[phase_name]
         force_until = config["epsilon_force_until"]
         min_epsilon = config["epsilon_min"]
         decay_rate = config["epsilon_decay_rate"]
-
+        
+        # 确保_recent_results初始化为deque
+        if not hasattr(self, '_recent_results'):
+            self._recent_results = deque(maxlen=200)
+        
+        # 计算最近100回合的胜率(如果可用)
+        recent_win_rate = None
+        if len(self._recent_results) > 0:
+            # 将deque转换为列表，然后再切片
+            results_list = list(self._recent_results)[-100:]
+            
+            if results_list:
+                recent_wins = sum(1 for res in results_list if res == self.player_id)
+                recent_draws = sum(1 for res in results_list if res == 2)
+                recent_count = len(results_list)
+                recent_win_rate = (recent_wins + 0.5 * recent_draws) / recent_count
+        
         # 阶段内强制探索期
         if episode_in_phase < force_until:
-            # 强制保持高探索
-            self.epsilon = max(min_epsilon, self.epsilon * 0.9999)  # 极慢衰减
+            self.epsilon = max(min_epsilon, self.epsilon * 0.9998)
             if episode_in_phase % 100 == 0:
-                print(
-                    f"{phase_name}: 强制探索期 ({episode_in_phase}/{force_until}), "
-                    f"保持高epsilon={self.epsilon:.3f}"
-                )
+                print(f"{phase_name}: 强制探索期 ({episode_in_phase}/{force_until}), "
+                    f"保持高epsilon={self.epsilon:.3f}")
             return
-
-        # 阶段内自适应衰减期 - 使用批次胜率
+        
+        # 阶段内自适应衰减期
         old_epsilon = self.epsilon
-
-        if batch_win_rate is not None:
-            # 根据批次胜率调整衰减速度
-            if batch_win_rate < 0.25:
-                # 批次胜率很低，几乎停止衰减
-                actual_decay = 0.9999
+        
+        # 优先使用最近100回合的胜率，否则使用批次胜率
+        win_rate_to_use = recent_win_rate if recent_win_rate is not None else batch_win_rate
+        
+        if win_rate_to_use is not None:
+            # 胜率低于40%时，增加epsilon
+            if win_rate_to_use < 0.4:
+                # 胜率越低，epsilon增加越多
+                actual_decay = 1.01 + (0.4 - win_rate_to_use) * 0.1
                 if episode_in_phase % 50 == 0:
-                    print(
-                        f"{phase_name}: 批次胜率过低({batch_win_rate:.3f})，减缓epsilon衰减"
-                    )
-            elif batch_win_rate < 0.4:
-                # 批次胜率较低，减慢衰减
-                actual_decay = max(0.9995, decay_rate)
-            elif batch_win_rate > 0.8:
-                # 批次胜率很高，可以加快衰减
-                actual_decay = min(0.992, decay_rate * 0.9)
-                if episode_in_phase % 50 == 0:
-                    print(
-                        f"{phase_name}: 批次胜率较高({batch_win_rate:.3f})，加快epsilon衰减"
-                    )
-            elif batch_win_rate > 0.65:
-                # 批次胜率较高，正常衰减
-                actual_decay = decay_rate
+                    print(f"{phase_name}: 最近胜率过低({win_rate_to_use:.3f})，提高epsilon以增加探索")
+            # 胜率40%-60%之间，缓慢衰减
+            elif win_rate_to_use < 0.6:
+                actual_decay = 0.999
+                if episode_in_phase % 100 == 0:
+                    print(f"{phase_name}: 胜率适中({win_rate_to_use:.3f})，缓慢衰减epsilon")
+            # 胜率高于60%，可以加速衰减
             else:
-                # 中等批次胜率，稍慢衰减
-                actual_decay = min(0.997, decay_rate * 1.002)
+                actual_decay = decay_rate
+                if episode_in_phase % 50 == 0:
+                    print(f"{phase_name}: 胜率良好({win_rate_to_use:.3f})，正常衰减epsilon")
         else:
-            # 使用阶段默认衰减率
             actual_decay = decay_rate
-
-        self.epsilon = max(min_epsilon, self.epsilon * actual_decay)
-
-        # 记录显著的epsilon变化 - 修复这里的f-string格式错误
-        if abs(old_epsilon - self.epsilon) > 0.05 or episode_in_phase % 100 == 0:
-            # 修复：先处理条件表达式，再放入f-string
-            win_rate_str = (
-                f"{batch_win_rate:.3f}" if batch_win_rate is not None else "N/A"
-            )
-            print(
-                f"{phase_name}: Episode {episode_in_phase}, "
-                f"epsilon: {old_epsilon:.3f} -> {self.epsilon:.3f}, "
-                f"批次胜率: {win_rate_str}"
-            )
+        
+        # 应用衰减或增长因子
+        self.epsilon = min(0.9, max(min_epsilon, self.epsilon * actual_decay))
+        
+        # 记录epsilon变化
+        if abs(old_epsilon - self.epsilon) > 0.01 or episode_in_phase % 100 == 0:
+            win_rate_str = f"{win_rate_to_use:.3f}" if win_rate_to_use is not None else "N/A"
+            print(f"{phase_name}: Episode {episode_in_phase}, "
+                f"epsilon: {old_epsilon:.3f} → {self.epsilon:.3f}, "
+                f"最近胜率: {win_rate_str}")
+        
+        # 维护最近结果队列
+        if not hasattr(self, '_recent_results'):
+            self._recent_results = deque(maxlen=200)
 
     def get_learning_rate(self) -> float:
         """获取当前学习率"""
@@ -1352,7 +1370,7 @@ class DQNTrainer(BaseTrainer):
 
     def __init__(self, agent: DQNAgent, opponent_agent: Player, **kwargs):
         super().__init__(agent, opponent_agent, **kwargs)
-        self.target_update_freq = 100
+        self.target_update_freq = 200
 
     def _agent_choose_action(self, board: Board, valid_actions: List[Tuple]) -> Tuple:
         """智能体选择动作"""

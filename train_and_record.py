@@ -22,7 +22,7 @@ AGENT_CONFIGS = {
             "epsilon": 0.9,
             "epsilon_min": 0.02,
             "epsilon_decay": 0.995,
-            "batch_size": 64,
+            "batch_size": 128,
             "memory_size": 40000,
             "use_dueling": True,
             "use_double": True,
@@ -41,7 +41,7 @@ AGENT_CONFIGS = {
             "epsilon": 0.9,
             "epsilon_min": 0.02,
             "epsilon_decay": 0.995,
-            "batch_size": 64,  # 降低batch size以适应更复杂的网络
+            "batch_size": 128,  # 降低batch size以适应更复杂的网络
             "memory_size": 40000,
             "exploration_strategy": "guided",
             "cnn_model_path": None,  # 可以指定预训练CNN模型路径
@@ -98,7 +98,7 @@ TRAINING_PRESETS = [ # 训练的预设，可以根据需求更改
                 "ratio": 0.2,  # 占总回合的比例
                 "opponent": "random",
                 "epsilon_start": 0.9,
-                "epsilon_end": 0.5,
+                "epsilon_end": 0.2,
                 "epsilon_force_until": 200,
                 "learning_rate": 0.001,
                 "learning_rate_min": 0.0001,
