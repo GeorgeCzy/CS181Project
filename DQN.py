@@ -106,7 +106,7 @@ class DuelingDoubleDQN(nn.Module):
             nn.Dropout(0.2),
             nn.Linear(hidden_size // 2, action_size),
         )
-        
+
         # 改进权重初始化
         self._initialize_weights()
 
@@ -115,13 +115,15 @@ class DuelingDoubleDQN(nn.Module):
         for module in self.modules():
             if isinstance(module, nn.Linear):
                 # 使用He初始化增加初始方差
-                nn.init.kaiming_uniform_(module.weight, mode='fan_in', nonlinearity='relu')
+                nn.init.kaiming_uniform_(
+                    module.weight, mode="fan_in", nonlinearity="relu"
+                )
                 if module.bias is not None:
                     # 给偏置更大的随机初始化
                     nn.init.uniform_(module.bias, -0.3, 0.3)
-    
+
         # 特别处理最后的输出层
-        if hasattr(self, 'advantage_stream') and hasattr(self, 'value_stream'):
+        if hasattr(self, "advantage_stream") and hasattr(self, "value_stream"):
             # Dueling DQN的输出层
             for stream in [self.advantage_stream, self.value_stream]:
                 if len(stream) > 0 and isinstance(stream[-1], nn.Linear):
@@ -214,7 +216,7 @@ class DQNAgent(Player):
                 # Epsilon 控制
                 "epsilon_force_until": 400,  # 前400回合强制保持高epsilon
                 "epsilon_min": 0.7,  # 阶段1最小epsilon
-                "epsilon_decay_rate": 0.9999,  # 阶段1极慢衰减
+                "epsilon_decay_rate": 0.999,  # 阶段1慢衰减
                 # Learning Rate 控制
                 "lr_force_until": 300,  # 前300回合学习率保持稳定
                 "lr_update_frequency": 50,  # 学习率更新频率
@@ -321,8 +323,7 @@ class DQNAgent(Player):
                 f"    LR: 强制{config['lr_force_until']}回合, 频率={config['lr_update_frequency']}"
             )
         self._test_initial_network_output()
-            
-    
+
     def _test_initial_network_output(self):
         """测试网络初始输出，确保有合理的Q值范围"""
         self.q_network.eval()
@@ -330,56 +331,73 @@ class DQNAgent(Player):
             # 创建多个随机状态进行测试
             test_states = torch.randn(20, self.state_size).to(device)  # 增加测试样本
             test_outputs = self.q_network(test_states)
-            
+
             print(f"\n=== 网络初始化测试 ===")
-            print(f"输出范围: [{test_outputs.min().item():.4f}, {test_outputs.max().item():.4f}]")
+            print(
+                f"输出范围: [{test_outputs.min().item():.4f}, {test_outputs.max().item():.4f}]"
+            )
             print(f"输出均值: {test_outputs.mean().item():.4f}")
             print(f"输出标准差: {test_outputs.std().item():.4f}")
             print(f"不同状态输出的方差: {test_outputs.var(dim=0).mean().item():.4f}")
             print(f"不同动作输出的方差: {test_outputs.var(dim=1).mean().item():.4f}")
-            
+
             # 检查输出多样性
             output_range = test_outputs.max().item() - test_outputs.min().item()
             print(f"输出值域宽度: {output_range:.4f}")
-            
+
             # 如果输出方差太小或值域太窄，重新初始化
-            if (test_outputs.std().item() < 0.5 or 
-                output_range < 1.0 or 
-                test_outputs.var(dim=1).mean().item() < 0.1):
-                
+            if (
+                test_outputs.std().item() < 0.5
+                or output_range < 1.0
+                or test_outputs.var(dim=1).mean().item() < 0.1
+            ):
+
                 print("警告：网络输出多样性不足，重新初始化...")
-                
+
                 # 重新初始化最后几层
                 for module_name, module in self.q_network.named_modules():
                     if isinstance(module, nn.Linear):
                         # 对所有线性层使用更激进的初始化
-                        nn.init.kaiming_uniform_(module.weight, mode='fan_in', nonlinearity='relu')
+                        nn.init.kaiming_uniform_(
+                            module.weight, mode="fan_in", nonlinearity="relu"
+                        )
                         if module.bias is not None:
                             nn.init.uniform_(module.bias, -0.5, 0.5)
-                
+
                 # 特别处理输出层
-                if hasattr(self.q_network, 'advantage_stream') and hasattr(self.q_network, 'value_stream'):
-                    for stream in [self.q_network.advantage_stream, self.q_network.value_stream]:
+                if hasattr(self.q_network, "advantage_stream") and hasattr(
+                    self.q_network, "value_stream"
+                ):
+                    for stream in [
+                        self.q_network.advantage_stream,
+                        self.q_network.value_stream,
+                    ]:
                         if len(stream) > 0 and isinstance(stream[-1], nn.Linear):
                             # 输出层使用更大范围
                             nn.init.uniform_(stream[-1].weight, -0.2, 0.2)
                             nn.init.uniform_(stream[-1].bias, -2.0, 2.0)
-                
+
                 # 重新测试
                 test_outputs = self.q_network(test_states)
                 print(f"重新初始化后:")
-                print(f"  输出范围: [{test_outputs.min().item():.4f}, {test_outputs.max().item():.4f}]")
+                print(
+                    f"  输出范围: [{test_outputs.min().item():.4f}, {test_outputs.max().item():.4f}]"
+                )
                 print(f"  输出标准差: {test_outputs.std().item():.4f}")
                 print(f"  不同动作方差: {test_outputs.var(dim=1).mean().item():.4f}")
-                print(f"  值域宽度: {test_outputs.max().item() - test_outputs.min().item():.4f}")
-            
+                print(
+                    f"  值域宽度: {test_outputs.max().item() - test_outputs.min().item():.4f}"
+                )
+
             # 检查是否有异常值
             if torch.isnan(test_outputs).any() or torch.isinf(test_outputs).any():
                 print("错误：网络输出包含NaN或Inf")
-        
+
         self.q_network.train()
 
-    def _find_closest_enemy(self, board: Board, pos: Tuple[int, int]) -> Tuple[Optional[Tuple[int, int]], Optional[int], Optional[int]]:
+    def _find_closest_enemy(
+        self, board: Board, pos: Tuple[int, int]
+    ) -> Tuple[Optional[Tuple[int, int]], Optional[int], Optional[int]]:
         """
         找到距离指定位置最近的敌方棋子
         返回: (敌方位置, 距离, 敌方棋子) 或 (None, None, None)
@@ -404,20 +422,24 @@ class DQNAgent(Player):
                         closest_enemy_pos = (nr, nc)
                         closest_enemy = enemy
 
-        return closest_enemy_pos, min_distance if closest_enemy_pos else None, closest_enemy
+        return (
+            closest_enemy_pos,
+            min_distance if closest_enemy_pos else None,
+            closest_enemy,
+        )
 
     def _evaluate_board_like_greedy(self, board: Board) -> float:
         """重新设计的Greedy评估函数 - 基于距离的威胁与机会"""
         score = 0
         piece_values = {8: 100, 7: 90, 6: 80, 5: 70, 4: 60, 3: 50, 2: 40, 1: 60}
-        
+
         # 基础得分 - 棋子价值
         for r in range(ROWS):
             for c in range(COLS):
                 piece = board.get_piece(r, c)
                 if piece and piece.revealed:
                     if piece.player == self.player_id:
-                        score += piece_values[piece.strength] 
+                        score += piece_values[piece.strength]
                     else:
                         score -= piece_values[piece.strength] * 0.8
 
@@ -427,22 +449,22 @@ class DQNAgent(Player):
                 piece = board.get_piece(r, c)
                 if not piece or not piece.revealed or piece.player != self.player_id:
                     continue
-                    
+
                 # 找到最近的敌人
                 enemy_pos, distance, enemy = self._find_closest_enemy(board, (r, c))
                 if not enemy_pos or not distance or not enemy:
                     continue
-                    
+
                 # 计算强度比较结果
                 compare_result = compare_strength(piece.strength, enemy.strength)
-                
+
                 if compare_result == 1:  # 己方棋子能吃敌人
                     # 距离越近越好：用常数除以距离
                     opportunity_score = 50.0 / (distance + 1)
                     # 敌人价值越高，机会越大
                     opportunity_score *= piece_values[enemy.strength] / 50.0
                     score += opportunity_score
-                
+
                 elif compare_result == -1:  # 己方棋子会被敌人吃
                     # 距离越远越好：用负的常数除以距离
                     threat_score = -40.0 / (distance + 1)
@@ -476,27 +498,38 @@ class DQNAgent(Player):
         # 翻开动作有固定奖励
         if action_type == "reveal":
             return current_score + 20  # 鼓励探索
-            
+
         # 移动动作
         elif action_type == "move":
             start_pos, end_pos = action[1], action[2]
-            
+
             # 尝试执行移动
             if not temp_board.try_move(start_pos, end_pos):
                 return float("-inf")  # 无效动作
-                
+
             # 获取执行后的棋盘得分
             new_score = self._evaluate_board_like_greedy(temp_board)
-            
+
             # 额外奖励直接吃子的行为
             moving_piece = board.get_piece(start_pos[0], start_pos[1])
             target_piece = board.get_piece(end_pos[0], end_pos[1])
-            
+
             if moving_piece and target_piece and target_piece.revealed:
                 if target_piece.player != self.player_id:
                     # 吃掉敌方棋子的移动
-                    piece_values = {8: 100, 7: 90, 6: 80, 5: 70, 4: 60, 3: 50, 2: 40, 1: 60}
-                    new_score += piece_values[target_piece.strength] * 0.3  # 额外激励吃子
+                    piece_values = {
+                        8: 100,
+                        7: 90,
+                        6: 80,
+                        5: 70,
+                        4: 60,
+                        3: 50,
+                        2: 40,
+                        1: 60,
+                    }
+                    new_score += (
+                        piece_values[target_piece.strength] * 0.3
+                    )  # 额外激励吃子
 
             return new_score - current_score
 
@@ -696,9 +729,18 @@ class DQNAgent(Player):
             return action
         else:
             return ("reveal", (0, 0), None)
+        
+    def set_exploration_strategy(self, strategy: str):
+        """动态设置探索策略"""
+        if strategy in ["guided", "random"]:
+            old_strategy = self.exploration_strategy
+            self.exploration_strategy = strategy
+            print(f"探索策略切换: {old_strategy} -> {strategy}")
+        else:
+            print(f"警告: 未知的探索策略 {strategy}")
 
     def choose_action(self, board: Board, valid_actions: List[Tuple]) -> Tuple:
-        """改进的动作选择：支持引导性探索"""
+        """改进的动作选择：支持动态探索策略切换"""
         if not valid_actions:
             all_actions = board.get_all_possible_moves(self.player_id)
             if not all_actions:
@@ -716,14 +758,14 @@ class DQNAgent(Player):
         if not validated_actions:
             return ("reveal", (0, 0), None)
 
-        # epsilon-greedy策略，但探索方式可以选择
+        # epsilon-greedy策略，但探索方式可以动态选择
         if random.random() < self.epsilon:
             if self.exploration_strategy == "guided":
                 return self._guided_exploration(board, validated_actions)
-            else:
+            else:  # random exploration
                 return random.choice(validated_actions)
 
-        # 利用（贪心）策略
+        # 利用（贪心）策略保持不变
         state = self._board_to_state_enhanced(board)
         valid_indices = [self._action_to_index(action) for action in validated_actions]
 
@@ -817,7 +859,9 @@ class DQNAgent(Player):
         reward_batch = torch.clamp(reward_batch, -50.0, 50.0)  # 放宽限制
 
         # 计算当前Q值
-        current_q_values = self.q_network(state_batch).gather(1, action_batch.unsqueeze(1))
+        current_q_values = self.q_network(state_batch).gather(
+            1, action_batch.unsqueeze(1)
+        )
 
         # 计算目标Q值
         with torch.no_grad():
@@ -858,11 +902,11 @@ class DQNAgent(Player):
         #     print(f"下一步Q值: 均值={next_q_values.mean().item():.4f}, 范围=[{next_q_values.min().item():.4f}, {next_q_values.max().item():.4f}], 标准差={next_q_values.std().item():.4f}")
         #     print(f"目标Q值: 均值={target_q_values.mean().item():.4f}, 范围=[{target_q_values.min().item():.4f}, {target_q_values.max().item():.4f}], 标准差={target_q_values.std().item():.4f}")
         #     print(f"TD误差: 均值={td_errors.mean().item():.4f}, 范围=[{td_errors.min().item():.4f}, {td_errors.max().item():.4f}], 标准差={td_errors.std().item():.4f}")
-            
+
         #     # 检查action分布
         #     unique_actions, action_counts = torch.unique(action_batch, return_counts=True)
         #     print(f"动作分布: {len(unique_actions)}种不同动作，最频繁动作出现{action_counts.max().item()}次")
-            
+
         #     # 检查result分布
         #     result_dist = [(result_batch == i).sum().item() for i in [-1, 0, 1]]
         #     print(f"结果分布: 进行中={result_dist[0]}, 智能体胜={result_dist[1]}, 对手胜={result_dist[2]}")
@@ -878,29 +922,31 @@ class DQNAgent(Player):
             # 动态噪声强度：差异越小，噪声越大
             noise_scale = 0.25 * (0.01 / max(q_diff, 0.001))
             noise_scale = min(noise_scale, 0.5)  # 限制最大噪声
-            
-            print(f"Q值差异过小({q_diff:.6f})，添加强化学习增强(噪声={noise_scale:.3f})...")
-            
+
+            # print(
+            #     f"Q值差异过小({q_diff:.6f})，添加强化学习增强(噪声={noise_scale:.3f})..."
+            # )
+
             # 加强噪声并确保其包含负值，增加学习信号多样性
-            target_noise = (torch.randn_like(target_q_values) * noise_scale) 
+            target_noise = torch.randn_like(target_q_values) * noise_scale
             target_q_values = target_q_values + target_noise
-            
+
             # 每100次小差异后，执行一次更激进的梯度提升
-            if not hasattr(self, '_small_diff_counter'):
+            if not hasattr(self, "_small_diff_counter"):
                 self._small_diff_counter = 0
             self._small_diff_counter += 1
-            
+
             if self._small_diff_counter % 100 == 0:
                 # 定期执行更激进的学习率调整
                 current_lr = self.get_learning_rate()
                 boost_lr = min(current_lr * 3, 0.01)  # 临时大幅提升学习率
                 for param_group in self.optimizer.param_groups:
-                    param_group['lr'] = boost_lr
-                print(f"执行学习率提升: {current_lr:.5f} -> {boost_lr:.5f}")
-        
-        loss = F.mse_loss(current_q_values.squeeze(), target_q_values, reduction='none')
+                    param_group["lr"] = boost_lr
+                # print(f"执行学习率提升: {current_lr:.5f} -> {boost_lr:.5f}")
+
+        loss = F.mse_loss(current_q_values.squeeze(), target_q_values, reduction="none")
         weighted_loss = (loss * weights_tensor).mean()
-        
+
         # 记录损失历史
         # self._loss_history.append(weighted_loss.item())
         # if len(self._loss_history) > 1000:
@@ -908,29 +954,29 @@ class DQNAgent(Player):
 
         # 检查损失是否异常小
         # if weighted_loss.item() < 0.01:
-            # print(f"\n警告：损失过小 ({weighted_loss.item():.6f})！")
-            # print(f"  当前Q值均值: {current_q_values.mean().item():.6f} ± {current_q_values.std().item():.6f}")
-            # print(f"  目标Q值均值: {target_q_values.mean().item():.6f} ± {target_q_values.std().item():.6f}")
-            # print(f"  Q值差异: {(target_q_values - current_q_values.squeeze()).abs().mean().item():.6f}")
-            # print(f"  最近100次损失均值: {np.mean(self._loss_history[-100:]):.6f}")
-            
-            # 检查是否是网络饱和
-            # with torch.no_grad():
-                # 测试随机输入的网络输出
-                # random_state = torch.randn_like(state_batch[:1])
-                # random_output = self.q_network(random_state)
-                # print(f"  随机输入的网络输出范围: [{random_output.min().item():.4f}, {random_output.max().item():.4f}]")
-                # print(f"  随机输入的网络输出标准差: {random_output.std().item():.4f}")
-            
-            # 如果损失持续过小，自动调整学习率
-            # if len(self._loss_history) >= 100 and np.mean(self._loss_history[-100:]) < 0.005:
-            #     print("  连续100次损失都过小，可能网络已饱和！")
-            #     current_lr = self.get_learning_rate()
-            #     if current_lr < 1e-4:
-            #         new_lr = min(current_lr * 3, 1e-3)  # 更激进的学习率提升
-            #         for param_group in self.optimizer.param_groups:
-            #             param_group['lr'] = new_lr
-            #         print(f"  自动大幅提升学习率: {current_lr:.6f} -> {new_lr:.6f}")
+        # print(f"\n警告：损失过小 ({weighted_loss.item():.6f})！")
+        # print(f"  当前Q值均值: {current_q_values.mean().item():.6f} ± {current_q_values.std().item():.6f}")
+        # print(f"  目标Q值均值: {target_q_values.mean().item():.6f} ± {target_q_values.std().item():.6f}")
+        # print(f"  Q值差异: {(target_q_values - current_q_values.squeeze()).abs().mean().item():.6f}")
+        # print(f"  最近100次损失均值: {np.mean(self._loss_history[-100:]):.6f}")
+
+        # 检查是否是网络饱和
+        # with torch.no_grad():
+        # 测试随机输入的网络输出
+        # random_state = torch.randn_like(state_batch[:1])
+        # random_output = self.q_network(random_state)
+        # print(f"  随机输入的网络输出范围: [{random_output.min().item():.4f}, {random_output.max().item():.4f}]")
+        # print(f"  随机输入的网络输出标准差: {random_output.std().item():.4f}")
+
+        # 如果损失持续过小，自动调整学习率
+        # if len(self._loss_history) >= 100 and np.mean(self._loss_history[-100:]) < 0.005:
+        #     print("  连续100次损失都过小，可能网络已饱和！")
+        #     current_lr = self.get_learning_rate()
+        #     if current_lr < 1e-4:
+        #         new_lr = min(current_lr * 3, 1e-3)  # 更激进的学习率提升
+        #         for param_group in self.optimizer.param_groups:
+        #             param_group['lr'] = new_lr
+        #         print(f"  自动大幅提升学习率: {current_lr:.6f} -> {new_lr:.6f}")
 
         # 检查损失是否为NaN或过大
         # if torch.isnan(weighted_loss) or weighted_loss.item() > 100:
@@ -954,7 +1000,7 @@ class DQNAgent(Player):
         # total_grad_norm = total_grad_norm ** 0.5
 
         # if self._debug_counter % 100 == 0:
-            # print(f"梯度信息: 总范数={total_grad_norm:.6f}, 最大梯度={max_grad:.6f}, 有梯度参数数={grad_count}")
+        # print(f"梯度信息: 总范数={total_grad_norm:.6f}, 最大梯度={max_grad:.6f}, 有梯度参数数={grad_count}")
 
         # 如果梯度太小，可能需要增加学习率
         # if total_grad_norm < 1e-6:
@@ -1005,7 +1051,11 @@ class DQNAgent(Player):
             print(f"警告: 未知的阶段名称 {phase_name}")
 
     def update_learning_rate_by_phase(
-        self, phase_name: str, episode_in_phase: int, batch_win_rate: float = None
+        self,
+        phase_name: str,
+        episode_in_phase: int,
+        batch_win_rate: float = None,
+        recent_win_rate: float = None,
     ):
         """分阶段的学习率控制 - 修复学习率过低的问题"""
         if phase_name not in self.phase_configs:
@@ -1023,33 +1073,49 @@ class DQNAgent(Player):
 
         current_lr = self.get_learning_rate()
 
+        win_rate_to_use = (
+            recent_win_rate if recent_win_rate is not None else batch_win_rate
+        )
+
         # 阶段内强制稳定期
         if episode_in_phase < force_until:
-            # 强制期内只进行微调，保持学习率相对稳定
-            if episode_in_phase > 0 and episode_in_phase % (update_freq * 2) == 0:
-                if batch_win_rate is not None:
-                    if batch_win_rate < 0.2:
-                        multiplier = stable_range[1] * 1.5  # 小幅提高
+            if episode_in_phase > 0 and episode_in_phase % update_freq == 0:
+                # 强制期内更温和的调整 - 优先使用近期胜率
+                win_rate_to_use = (
+                    recent_win_rate if recent_win_rate is not None else batch_win_rate
+                )
+                if win_rate_to_use is not None:
+                    if win_rate_to_use < 0.3:
+                        multiplier = stable_range[1]  # 胜率低，提高学习率
                         print(
-                            f"{phase_name}: 强制期，批次胜率过低({batch_win_rate:.3f})，小幅提高学习率"
+                            f"{phase_name}: 强制期，最近胜率过低({win_rate_to_use:.3f})，轻微提高学习率"
                         )
-                    elif batch_win_rate > 0.8:
-                        multiplier = stable_range[0]  # 小幅降低
+                    elif win_rate_to_use > 0.7:
+                        multiplier = stable_range[0]  # 胜率高，降低学习率
                         print(
-                            f"{phase_name}: 强制期，批次胜率过高({batch_win_rate:.3f})，小幅降低学习率"
+                            f"{phase_name}: 强制期，最近胜率较高({win_rate_to_use:.3f})，轻微降低学习率"
                         )
                     else:
-                        multiplier = 1.0  # 保持不变
+                        multiplier = 1.0  # 保持稳定
 
                     new_lr = current_lr * multiplier
-                    # 确保学习率不会太低
-                    new_lr = max(1e-3, min(new_lr, self.lr_max))  # 提高最小学习率
+                    new_lr = max(self.lr_min, min(new_lr, self.lr_max))
 
-                    if abs(new_lr - current_lr) > 1e-5:
-                        for param_group in self.optimizer.param_groups:
-                            param_group["lr"] = new_lr
+                    if abs(new_lr - current_lr) > 1e-6:
+                        self.optimizer.param_groups[0]["lr"] = new_lr
+                        recent_str = (
+                            f"近期={recent_win_rate:.3f}"
+                            if recent_win_rate is not None
+                            else ""
+                        )
+                        batch_str = (
+                            f"批次={batch_win_rate:.3f}"
+                            if batch_win_rate is not None
+                            else ""
+                        )
+                        win_info = f"胜率({recent_str}, {batch_str})"
                         print(
-                            f"{phase_name}: 强制期学习率调整: {current_lr:.6f} -> {new_lr:.6f}"
+                            f"{phase_name}: 强制期学习率调整: {current_lr:.6f} → {new_lr:.6f}, {win_info}"
                         )
             return
 
@@ -1057,134 +1123,159 @@ class DQNAgent(Player):
         if episode_in_phase > 0 and episode_in_phase % update_freq == 0:
             old_lr = current_lr
 
-            if self.adaptive_lr and batch_win_rate is not None:
-                # 根据批次胜率调整学习率 - 使用阶段特定的范围
-                if batch_win_rate < 0.2:
-                    # 批次胜率很低，增加学习率
-                    multiplier = adaptive_range[1]
-                    print(
-                        f"{phase_name}: 批次胜率过低({batch_win_rate:.3f})，提高学习率"
-                    )
-                elif batch_win_rate < 0.4:
-                    # 批次胜率较低，适度增加学习率
-                    multiplier = adaptive_range[1] + 1.0
-                elif batch_win_rate > 0.8:
-                    # 批次胜率很高，但不要降得太低
-                    multiplier = max(0.9, adaptive_range[0])  # 限制最大衰减
-                    print(
-                        f"{phase_name}: 批次胜率较高({batch_win_rate:.3f})，适度降低学习率"
-                    )
-                elif batch_win_rate > 0.65:
-                    # 批次胜率较高，适度降低学习率
-                    multiplier = (adaptive_range[0] + 1.0) / 2
-                else:
-                    # 批次胜率正常，保持当前学习率
-                    multiplier = 1.0
+            if self.adaptive_lr:
+                # 优先使用近期胜率，其次使用批次胜率
+                win_rate_to_use = (
+                    recent_win_rate if recent_win_rate is not None else batch_win_rate
+                )
 
-                new_lr = current_lr * multiplier
+                if win_rate_to_use is not None:
+                    if win_rate_to_use < 0.25:
+                        # 胜率很低，大幅提高学习率
+                        multiplier = adaptive_range[1]
+                        print(
+                            f"{phase_name}: 最近胜率过低({win_rate_to_use:.3f})，提高学习率"
+                        )
+                    elif win_rate_to_use < 0.4:
+                        # 胜率较低，适度提高学习率
+                        multiplier = (adaptive_range[1] + 1.0) / 2
+                    elif win_rate_to_use > 0.75:
+                        # 胜率很高，降低学习率
+                        multiplier = adaptive_range[0]
+                        print(
+                            f"{phase_name}: 最近胜率较高({win_rate_to_use:.3f})，降低学习率"
+                        )
+                    elif win_rate_to_use > 0.6:
+                        # 胜率较高，轻微降低学习率
+                        multiplier = (adaptive_range[0] + 1.0) / 2
+                    else:
+                        # 正常范围，保持稳定
+                        multiplier = 1.0
 
-                # 限制学习率范围 - 提高最小值
-                new_lr = max(1e-3, min(new_lr, self.lr_max))
+                    new_lr = current_lr * multiplier
+                    new_lr = max(self.lr_min, min(new_lr, self.lr_max))
 
-                # 更新学习率
-                if abs(new_lr - current_lr) > 1e-5:
-                    for param_group in self.optimizer.param_groups:
-                        param_group["lr"] = new_lr
-                    print(
-                        f"{phase_name}: 基于批次胜率调整学习率: {current_lr:.6f} -> {new_lr:.6f}"
-                    )
+                    if abs(new_lr - current_lr) > 1e-6:
+                        self.optimizer.param_groups[0]["lr"] = new_lr
+                        recent_str = (
+                            f"近期={recent_win_rate:.3f}"
+                            if recent_win_rate is not None
+                            else ""
+                        )
+                        batch_str = (
+                            f"批次={batch_win_rate:.3f}"
+                            if batch_win_rate is not None
+                            else ""
+                        )
+                        win_info = f"胜率({recent_str}, {batch_str})"
+                        print(
+                            f"{phase_name}: 基于胜率调整学习率: {current_lr:.6f} → {new_lr:.6f}, {win_info}"
+                        )
 
             # 记录学习率变化
             if (
-                abs(self.get_learning_rate() - old_lr) > 1e-5
+                abs(self.get_learning_rate() - old_lr) > 1e-6
                 and episode_in_phase % 100 == 0
             ):
-                win_rate_str = (
-                    f"{batch_win_rate:.3f}" if batch_win_rate is not None else "N/A"
+                recent_str = (
+                    f"近期={recent_win_rate:.3f}"
+                    if recent_win_rate is not None
+                    else "N/A"
+                )
+                batch_str = (
+                    f"批次={batch_win_rate:.3f}"
+                    if batch_win_rate is not None
+                    else "N/A"
                 )
                 print(
                     f"{phase_name}: Episode {episode_in_phase}, "
-                    f"学习率: {old_lr:.6f} -> {self.get_learning_rate():.6f}, "
-                    f"批次胜率: {win_rate_str}"
+                    f"学习率: {old_lr:.6f} → {self.get_learning_rate():.6f}, "
+                    f"胜率: 近期={recent_str}, 批次={batch_str}"
                 )
 
-    def decay_epsilon_by_phase(self, phase_name: str, episode_in_phase: int, batch_win_rate: float = None):
-        """改进的分阶段epsilon衰减控制 - 对近期胜率更敏感"""
+    def decay_epsilon_by_phase(
+        self,
+        phase_name: str,
+        episode_in_phase: int,
+        batch_win_rate: float = None,
+        recent_win_rate: float = None,
+    ):
+        """改进的分阶段epsilon衰减控制 - 接收近期胜率参数"""
         if phase_name not in self.phase_configs:
             self.decay_epsilon(batch_win_rate)
             return
-        
+
         # 更新内部计数器
         self.episode_in_phase = episode_in_phase
-        
+
         config = self.phase_configs[phase_name]
         force_until = config["epsilon_force_until"]
         min_epsilon = config["epsilon_min"]
         decay_rate = config["epsilon_decay_rate"]
-        
-        # 确保_recent_results初始化为deque
-        if not hasattr(self, '_recent_results'):
-            self._recent_results = deque(maxlen=200)
-        
-        # 计算最近100回合的胜率(如果可用)
-        recent_win_rate = None
-        if len(self._recent_results) > 0:
-            # 将deque转换为列表，然后再切片
-            results_list = list(self._recent_results)[-100:]
-            
-            if results_list:
-                recent_wins = sum(1 for res in results_list if res == self.player_id)
-                recent_draws = sum(1 for res in results_list if res == 2)
-                recent_count = len(results_list)
-                recent_win_rate = (recent_wins + 0.5 * recent_draws) / recent_count
-        
+
         # 阶段内强制探索期
         if episode_in_phase < force_until:
             self.epsilon = max(min_epsilon, self.epsilon * 0.9998)
             if episode_in_phase % 100 == 0:
-                print(f"{phase_name}: 强制探索期 ({episode_in_phase}/{force_until}), "
-                    f"保持高epsilon={self.epsilon:.3f}")
+                recent_str = (
+                    f"近期={recent_win_rate:.3f}" if recent_win_rate is not None else ""
+                )
+                batch_str = (
+                    f"批次={batch_win_rate:.3f}" if batch_win_rate is not None else ""
+                )
+                print(
+                    f"{phase_name}: 强制探索期 ({episode_in_phase}/{force_until}), "
+                    f"保持高epsilon={self.epsilon:.3f}, 胜率({recent_str}, {batch_str})"
+                )
             return
-        
+
         # 阶段内自适应衰减期
         old_epsilon = self.epsilon
-        
+
         # 优先使用最近100回合的胜率，否则使用批次胜率
-        win_rate_to_use = recent_win_rate if recent_win_rate is not None else batch_win_rate
-        
+        win_rate_to_use = (
+            recent_win_rate if recent_win_rate is not None else batch_win_rate
+        )
+
         if win_rate_to_use is not None:
             # 胜率低于40%时，增加epsilon
             if win_rate_to_use < 0.4:
                 # 胜率越低，epsilon增加越多
-                actual_decay = 1.01 + (0.4 - win_rate_to_use) * 0.1
+                actual_decay = 1.01 + (0.4 - win_rate_to_use) * 0.05
                 if episode_in_phase % 50 == 0:
-                    print(f"{phase_name}: 最近胜率过低({win_rate_to_use:.3f})，提高epsilon以增加探索")
-            # 胜率40%-60%之间，缓慢衰减
-            elif win_rate_to_use < 0.6:
+                    print(
+                        f"{phase_name}: 最近胜率过低({win_rate_to_use:.3f})，提高epsilon以增加探索"
+                    )
+            # 胜率40%-80%之间，缓慢衰减
+            elif win_rate_to_use < 0.8:
                 actual_decay = 0.999
                 if episode_in_phase % 100 == 0:
-                    print(f"{phase_name}: 胜率适中({win_rate_to_use:.3f})，缓慢衰减epsilon")
-            # 胜率高于60%，可以加速衰减
+                    print(
+                        f"{phase_name}: 胜率适中({win_rate_to_use:.3f})，缓慢衰减epsilon"
+                    )
+            # 胜率高于80%，可以加速衰减
             else:
                 actual_decay = decay_rate
                 if episode_in_phase % 50 == 0:
-                    print(f"{phase_name}: 胜率良好({win_rate_to_use:.3f})，正常衰减epsilon")
+                    print(
+                        f"{phase_name}: 胜率良好({win_rate_to_use:.3f})，正常衰减epsilon"
+                    )
         else:
             actual_decay = decay_rate
-        
+
         # 应用衰减或增长因子
         self.epsilon = min(0.9, max(min_epsilon, self.epsilon * actual_decay))
-        
+
         # 记录epsilon变化
         if abs(old_epsilon - self.epsilon) > 0.01 or episode_in_phase % 100 == 0:
-            win_rate_str = f"{win_rate_to_use:.3f}" if win_rate_to_use is not None else "N/A"
-            print(f"{phase_name}: Episode {episode_in_phase}, "
+            win_rate_str = (
+                f"{win_rate_to_use:.3f}" if win_rate_to_use is not None else "N/A"
+            )
+            print(
+                f"{phase_name}: Episode {episode_in_phase}, "
                 f"epsilon: {old_epsilon:.3f} → {self.epsilon:.3f}, "
-                f"最近胜率: {win_rate_str}")
-        
-        # 维护最近结果队列
-        if not hasattr(self, '_recent_results'):
-            self._recent_results = deque(maxlen=200)
+                f"最近胜率: {win_rate_str}"
+            )
 
     def get_learning_rate(self) -> float:
         """获取当前学习率"""
@@ -1371,11 +1462,26 @@ class DQNTrainer(BaseTrainer):
     def __init__(self, agent: DQNAgent, opponent_agent: Player, **kwargs):
         super().__init__(agent, opponent_agent, **kwargs)
         self.target_update_freq = 200
+        self.last_update = 0
+        self.phase_target_update_freq = {
+            "phase1": 200,
+            "phase2": 1000,  # 第二阶段使用更低的更新频率
+            "phase3": 1000
+        }
 
     def _agent_choose_action(self, board: Board, valid_actions: List[Tuple]) -> Tuple:
         """智能体选择动作"""
         return self.agent.choose_action(board, valid_actions)
 
+    def set_phase(self, phase_name: str, episode_offset: int = 0):
+        """设置训练阶段并调整目标网络更新频率"""
+        super().set_phase(phase_name, episode_offset)
+        
+        if phase_name in self.phase_target_update_freq:
+            old_freq = self.target_update_freq
+            self.target_update_freq = self.phase_target_update_freq[phase_name]
+            print(f"目标网络更新频率调整: {old_freq} -> {self.target_update_freq}")
+    
     def _agent_update(
         self,
         board_before: Board,
@@ -1384,17 +1490,19 @@ class DQNTrainer(BaseTrainer):
         board_after: Board,
         result: int,
     ):
-        """更新智能体"""
+        """更新智能体 - 使用动态更新频率"""
         # 存储经验
         self.agent.store_experience(board_before, action, reward, board_after, result)
 
         # 学习
         self.agent.replay()
 
-        # 更新目标网络
+        # 使用当前阶段的更新频率更新目标网络
         episodes = self.agent.training_stats["episodes"]
-        if episodes % self.target_update_freq == 0:
+        if episodes - self.last_update >= self.target_update_freq:
+            self.last_update = episodes
             self.agent.update_target_network()
+            print(f"目标网络已更新 (第{episodes}回合, 频率:{self.target_update_freq})")
 
     def train_episode(self, opponent=None, **kwargs) -> Tuple[float, int, int]:
         """训练一个回合 - 重置奖励函数历史"""
@@ -1407,7 +1515,21 @@ class DQNTrainer(BaseTrainer):
 
         # 调用父类方法
         return super().train_episode(opponent, **kwargs)
+    
+    def finalize_training(self):
+        """训练完成时的最终处理"""
+        # 强制执行最后一次目标网络更新
+        self.agent.update_target_network()
+        print(f"训练完成，执行最终目标网络更新")
+        
+        # 设置为测试模式
+        self.agent.set_training_mode(False)
+        
+        # 输出最终统计
+        print(f"最终epsilon: {self.agent.epsilon:.4f}")
+        print(f"最终学习率: {self.agent.get_learning_rate():.6f}")
 
     def save_model(self, filename: str):
         """保存模型"""
+        self.update_target_network()
         self.agent.save_model(filename)

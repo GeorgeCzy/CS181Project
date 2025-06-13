@@ -721,6 +721,8 @@ class BaseTrainer:
         self.batch_draws = 0
         self.batch_episodes = 0
         self.batch_rewards = []
+        self.batch_steps = 0
+        self.current_episode_steps = 0
 
         # 总体统计（仅用于全局记录）
         self.total_episodes = 0
@@ -748,13 +750,36 @@ class BaseTrainer:
         self.current_phase = phase_name
         self.phase_episode_offset = episode_offset
         self.reset_batch_stats()
+        
+    def get_current_phase(self) -> str:
+        """获取当前训练阶段"""
+        return self.current_phase
 
     def get_batch_win_rate(self) -> float:
         """获取当前批次胜率"""
-        if self.batch_episodes == 0:
+        total_games = self.batch_wins + self.batch_losses + self.batch_draws
+        if total_games == 0:
             return 0.0
-        effective_wins = self.batch_wins + 0.5 * self.batch_draws
-        return effective_wins / self.batch_episodes
+        return (self.batch_wins + 0.5 * self.batch_draws) / total_games
+    
+    def get_recent_win_rate(self, num_recent=100):
+        """获取最近n场比赛的胜率"""
+        if not hasattr(self, '_recent_results') or len(self._recent_results) == 0:
+            return None
+        
+        # 获取最近num_recent个结果
+        results = list(self._recent_results)[-min(num_recent, len(self._recent_results)):]
+        if not results:
+            return None
+        
+        recent_wins = sum(1 for res in results if res == self.agent.player_id)
+        recent_draws = sum(1 for res in results if res == 2)
+        recent_count = len(results)
+        
+        if recent_count == 0:
+            return 0.0
+        
+        return (recent_wins + 0.5 * recent_draws) / recent_count
 
     def get_batch_avg_reward(self) -> float:
         """获取当前批次平均奖励"""
@@ -836,17 +861,21 @@ class BaseTrainer:
                     result = self.agent.player_id
                     break
 
+        self.current_episode_steps = steps
+        
         # 统一处理episode结束后的工作
         self._handle_episode_end(result, total_reward)
 
         return total_reward, steps, result
 
     def _handle_episode_end(self, result: int, total_reward: float):
-        """统一处理episode结束后的工作 - 使用智能体的统一超参数控制"""
-        # 更新批次统计
+        """统一处理episode结束后的工作"""
+        # 累计统计
         self.batch_episodes += 1
         self.batch_rewards.append(total_reward)
-
+        self.batch_steps += self.current_episode_steps
+        
+        # 记录结果
         if result == self.agent.player_id:
             self.batch_wins += 1
         elif result == 1 - self.agent.player_id:
@@ -854,39 +883,33 @@ class BaseTrainer:
         else:
             self.batch_draws += 1
 
-        # 更新总体统计
-        self.total_episodes += 1
-        if result == self.agent.player_id:
-            self.total_wins += 1
-        elif result == 1 - self.agent.player_id:
-            self.total_losses += 1
-        else:
-            self.total_draws += 1
-
         # 更新智能体统计
         self.agent.update_stats(result, total_reward)
 
         # 添加结果追踪
-        if hasattr(self.agent, '_recent_results'):
-            self.agent._recent_results.append(result)
-        else:
-            self.agent._recent_results = deque(maxlen=200)
-            self.agent._recent_results.append(result)
+        if not hasattr(self, '_recent_results'):
+            self._recent_results = deque(maxlen=200)
+        self._recent_results.append(result)
         
+        # 计算胜率
         batch_win_rate = self.get_batch_win_rate()
+        recent_win_rate = self.get_recent_win_rate(100)
+        
         current_episode_in_phase = self.batch_episodes - 1  # 从0开始
 
         # 使用智能体的统一分阶段控制方法
         if hasattr(self.agent, "decay_epsilon_by_phase") and hasattr(
             self.agent, "update_learning_rate_by_phase"
         ):
-            # 新的统一控制方法
-            self.agent.decay_epsilon_by_phase(
-                self.current_phase, current_episode_in_phase, batch_win_rate
-            )
-            self.agent.update_learning_rate_by_phase(
-                self.current_phase, current_episode_in_phase, batch_win_rate
-            )
+            # 当前阶段
+            current_phase = self.get_current_phase()
+            if current_phase:
+                self.agent.decay_epsilon_by_phase(
+                    current_phase, current_episode_in_phase, batch_win_rate, recent_win_rate
+                )
+                self.agent.update_learning_rate_by_phase(
+                    current_phase, current_episode_in_phase, batch_win_rate, recent_win_rate
+                )
         else:
             # 后备方法
             if hasattr(self.agent, "decay_epsilon_by_phase"):

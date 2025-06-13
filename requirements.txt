@@ -1,2 +1,5 @@
 pygame==2.5.0
 torch
+matplotlib
+scikit-learn
+numpy

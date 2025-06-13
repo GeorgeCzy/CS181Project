@@ -33,6 +33,7 @@ class HumanPlayer(Player):
     def __init__(self, player_id):
         super().__init__(player_id)
         self.selected_piece_pos = None
+        self.ai_type = "Human Player"
 
     def handle_event(self, event, board):
         if event.type == pygame.MOUSEBUTTONDOWN:
@@ -51,8 +52,8 @@ class HumanPlayer(Player):
 
                 # 确保选择的棋子是自己的
                 if piece_moving and piece_moving.player == self.player_id:
-                    # 如果点击了相邻位置，尝试移动
                     if board.is_adjacent(self.selected_piece_pos, (row, col)):
+                        # 尝试移动
                         moved = board.try_move(self.selected_piece_pos, (row, col))
                         if moved:
                             self.selected_piece_pos = None
@@ -60,18 +61,27 @@ class HumanPlayer(Player):
                         else:
                             # 移动失败（例如，试图移动到自己已翻开的棋子），取消选择
                             self.selected_piece_pos = None
-                            # 尝试选择新点击的棋子(第一次点击)
-                            if piece:
+                            # 尝试选择新点击的棋子（如果它属于当前玩家）
+                            if (
+                                piece
+                                and piece.player == self.player_id
+                                and piece.revealed
+                            ):
                                 self.selected_piece_pos = (row, col)
                     else:
                         # 目标位置不相邻，取消选择当前棋子，并尝试选择新棋子
-                        if (
-                            self.selected_piece_pos == piece_moving
-                            and piece
-                            and not piece.revealed
-                        ):  # (第二次点击) 如果两次点的都是这个且没有翻开，相当于确认。human 这个我忘测试了，你可以跑跑看看
+                        self.selected_piece_pos = None
+                        if piece and piece.player == self.player_id:
+                            if not piece.revealed:
+                                piece.reveal()
+                                return True  # Revealed piece, turn ends
+                            else:
+                                self.selected_piece_pos = (row, col)  # Select new piece
+                else:  # 如果 selected_piece_pos 指向的不是自己的棋子了（可能被AI吃掉），或者已经清空了
+                    self.selected_piece_pos = None
+                    if piece and piece.player == self.player_id:
+                        if not piece.revealed:
                             piece.reveal()
-                            self.selected_piece_pos = None
                             return True  # Revealed piece, turn ends
                         else:
                             self.selected_piece_pos = (row, col)  # Select new piece
@@ -80,7 +90,8 @@ class HumanPlayer(Player):
                 if not piece.revealed:
                     piece.reveal()
                     return True  # Revealed piece, turn ends
-                self.selected_piece_pos = (row, col)  # Select piece
+                elif piece.player == self.player_id:  # 只能选择自己的棋子
+                    self.selected_piece_pos = (row, col)  # Select piece
         return False  # Event not handled or turn not ended
 
     def get_selected_pos(self):

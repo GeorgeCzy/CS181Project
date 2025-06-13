@@ -1,5 +1,5 @@
-# **/*.pkl
+**/*.pkl
 # **/*.pth
 # **/*.png
-# training_logs
+training_logs
 **/temp
